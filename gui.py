@@ -337,6 +337,8 @@ def soniox_transcribe(
     api_host = api_host.rstrip("/")
     urls = [
         f"{api_host}/stt/v1/transcribe",
+        f"{api_host}/stt/async/transcribe",
+        f"{api_host}/stt/async",
         f"{api_host}/v1/transcribe",
         f"{api_host}/transcribe",
     ]
