@@ -232,6 +232,14 @@ class SonioxGui:
         lang_entry = ttk.Entry(frame, textvariable=self.target_language_var, width=10)
         lang_entry.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
 
+        self.api_key_var = tk.StringVar(value=os.environ.get("SONIOX_API_KEY", ""))
+        api_key_label = ttk.Label(frame, text="API Key:")
+        api_key_label.grid(row=3, column=0, sticky=tk.W, pady=5)
+        api_key_entry = ttk.Entry(frame, textvariable=self.api_key_var, width=50, show="*")
+        api_key_entry.grid(row=3, column=1, sticky=tk.W, padx=5, pady=5)
+        api_key_hint = ttk.Label(frame, text="可留空使用环境变量 SONIOX_API_KEY", foreground="#666")
+        api_key_hint.grid(row=3, column=2, sticky=tk.W)
+
         self.drop_label = ttk.Label(
             self.root,
             text="拖拽 mp3 到此处",
@@ -281,9 +289,9 @@ class SonioxGui:
         output_dir = self.output_dir_var.get().strip() or os.getcwd()
         os.makedirs(output_dir, exist_ok=True)
 
-        api_key = os.environ.get("SONIOX_API_KEY")
+        api_key = self.api_key_var.get().strip() or os.environ.get("SONIOX_API_KEY")
         if not api_key:
-            messagebox.showerror("错误", "请先设置环境变量 SONIOX_API_KEY。")
+            messagebox.showerror("错误", "请先设置环境变量 SONIOX_API_KEY 或填写 API Key。")
             return
 
         target_language = self.target_language_var.get().strip()
@@ -326,12 +334,13 @@ def main() -> None:
     parser.add_argument("--audio_path", help="Audio file path for CLI mode")
     parser.add_argument("--output_dir", default=os.getcwd())
     parser.add_argument("--target_language", default="zh")
+    parser.add_argument("--api_key", help="Soniox API key (fallback to SONIOX_API_KEY)")
     args = parser.parse_args()
 
     if args.no_gui:
         if not args.audio_path:
             raise SystemExit("--audio_path required when using --no-gui")
-        api_key = os.environ.get("SONIOX_API_KEY")
+        api_key = args.api_key or os.environ.get("SONIOX_API_KEY")
         if not api_key:
             raise RuntimeError("Missing SONIOX_API_KEY")
         session = requests.Session()
