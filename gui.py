@@ -404,12 +404,17 @@ class TranscriptionGUI:
 
         file_frame = ttk.LabelFrame(main, text="音频文件")
         file_frame.pack(fill=tk.X, pady=5)
-        ttk.Entry(file_frame, textvariable=self.audio_path).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
+        file_entry = ttk.Entry(file_frame, textvariable=self.audio_path)
+        file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         ttk.Button(file_frame, text="选择文件", command=self._select_file).pack(side=tk.LEFT, padx=5)
 
         drop_label = ttk.Label(file_frame, text="")
         drop_label.pack(side=tk.LEFT, padx=5)
         if TkinterDnD and DND_FILES:
+            file_entry.drop_target_register(DND_FILES)
+            file_entry.dnd_bind("<<Drop>>", self._on_drop)
+            file_frame.drop_target_register(DND_FILES)
+            file_frame.dnd_bind("<<Drop>>", self._on_drop)
             drop_label.drop_target_register(DND_FILES)
             drop_label.dnd_bind("<<Drop>>", self._on_drop)
 
