@@ -29,6 +29,101 @@ class SubtitleSegment:
     text: str
 
 
+CONFIG_FILENAME = "gui_config.json"
+CONFIG_PATH = os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
+
+DEFAULT_MODELS = [
+    "stt-async",
+    "stt-rt-preview",
+    "stt-rt",
+]
+
+DEFAULT_TRANSLATION_MODELS = [
+    "default",
+]
+
+LANGUAGE_OPTIONS: list[tuple[str, str]] = [
+    ("日本語 (ja)", "ja"),
+    ("English (en)", "en"),
+    ("多语言 (multi)", "multi"),
+    ("中文 (zh)", "zh"),
+    ("한국어 (ko)", "ko"),
+    ("Español (es)", "es"),
+    ("Français (fr)", "fr"),
+    ("Deutsch (de)", "de"),
+    ("Italiano (it)", "it"),
+    ("Português (pt)", "pt"),
+    ("Русский (ru)", "ru"),
+    ("हिन्दी (hi)", "hi"),
+    ("Bahasa Indonesia (id)", "id"),
+    ("ไทย (th)", "th"),
+    ("Tiếng Việt (vi)", "vi"),
+    ("العربية (ar)", "ar"),
+    ("Türkçe (tr)", "tr"),
+    ("Nederlands (nl)", "nl"),
+    ("Svenska (sv)", "sv"),
+    ("Norsk (no)", "no"),
+    ("Dansk (da)", "da"),
+    ("Suomi (fi)", "fi"),
+    ("Polski (pl)", "pl"),
+    ("Čeština (cs)", "cs"),
+    ("Українська (uk)", "uk"),
+    ("Ελληνικά (el)", "el"),
+    ("עברית (he)", "he"),
+    ("Română (ro)", "ro"),
+    ("Magyar (hu)", "hu"),
+]
+
+
+def _default_config() -> dict[str, Any]:
+    return {
+        "api_key": "",
+        "api_host": "https://api.soniox.com",
+        "model": "stt-async",
+        "translation_model": "default",
+        "language": "ja",
+        "translation_target": "en",
+        "enable_language_identification": False,
+        "enable_word_level": True,
+        "enable_transcription": True,
+        "enable_translation": True,
+        "max_chars": 16,
+        "max_duration": 6.0,
+        "max_silence": 1.0,
+        "models": DEFAULT_MODELS,
+        "translation_models": DEFAULT_TRANSLATION_MODELS,
+        "languages": [code for _, code in LANGUAGE_OPTIONS],
+    }
+
+
+def load_config() -> dict[str, Any]:
+    if not os.path.exists(CONFIG_PATH):
+        config = _default_config()
+        save_config(config)
+        return config
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as config_file:
+            data = json.load(config_file)
+    except (OSError, json.JSONDecodeError):
+        data = _default_config()
+    default_config = _default_config()
+    default_config.update(data)
+    models = list(dict.fromkeys(default_config.get("models", DEFAULT_MODELS)))
+    if default_config.get("model") and default_config["model"] not in models:
+        models.append(default_config["model"])
+    default_config["models"] = models
+    translation_models = list(dict.fromkeys(default_config.get("translation_models", DEFAULT_TRANSLATION_MODELS)))
+    if default_config.get("translation_model") and default_config["translation_model"] not in translation_models:
+        translation_models.append(default_config["translation_model"])
+    default_config["translation_models"] = translation_models
+    return default_config
+
+
+def save_config(config: dict[str, Any]) -> None:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as config_file:
+        json.dump(config, config_file, ensure_ascii=False, indent=2)
+
+
 def _format_timestamp(seconds: float) -> str:
     milliseconds = int(round(seconds * 1000))
     hours = milliseconds // 3_600_000
@@ -226,6 +321,7 @@ def soniox_transcribe(
     api_key: str,
     audio_path: str,
     model: str,
+    translation_model: str,
     language: str,
     enable_language_identification: bool,
     enable_word_level: bool,
@@ -245,6 +341,8 @@ def soniox_transcribe(
             "type": "one_way",
             "target_language": translation_target,
         }
+        if translation_model:
+            config["translation"]["model"] = translation_model
 
     fields = {"config": json.dumps(config)}
     body, boundary = _build_multipart(fields, "audio", audio_path, audio_data)
@@ -273,24 +371,30 @@ class TranscriptionGUI:
         self.root.title("Soniox Audio → SRT GUI")
         self.root.geometry("760x560")
 
+        self.config_data = load_config()
+        self.language_labels = {code: label for label, code in LANGUAGE_OPTIONS}
+        self.language_codes = {label: code for label, code in LANGUAGE_OPTIONS}
+
         self.audio_path = tk.StringVar()
-        self.api_key = tk.StringVar()
-        self.api_host = tk.StringVar(value="https://api.soniox.com")
-        self.model = tk.StringVar(value="stt-async")
-        self.language = tk.StringVar(value="ja")
-        self.translation_target = tk.StringVar(value="en")
-        self.enable_language_id = tk.BooleanVar(value=False)
-        self.enable_word_level = tk.BooleanVar(value=True)
-        self.enable_transcription = tk.BooleanVar(value=True)
-        self.enable_translation = tk.BooleanVar(value=True)
-        self.max_chars = tk.IntVar(value=16)
-        self.max_duration = tk.DoubleVar(value=6.0)
-        self.max_silence = tk.DoubleVar(value=1.0)
+        self.api_key = tk.StringVar(value=self.config_data["api_key"])
+        self.api_host = tk.StringVar(value=self.config_data["api_host"])
+        self.model = tk.StringVar(value=self.config_data["model"])
+        self.translation_model = tk.StringVar(value=self.config_data["translation_model"])
+        self.language = tk.StringVar(value=self._language_label(self.config_data["language"]))
+        self.translation_target = tk.StringVar(value=self._language_label(self.config_data["translation_target"]))
+        self.enable_language_id = tk.BooleanVar(value=self.config_data["enable_language_identification"])
+        self.enable_word_level = tk.BooleanVar(value=self.config_data["enable_word_level"])
+        self.enable_transcription = tk.BooleanVar(value=self.config_data["enable_transcription"])
+        self.enable_translation = tk.BooleanVar(value=self.config_data["enable_translation"])
+        self.max_chars = tk.IntVar(value=self.config_data["max_chars"])
+        self.max_duration = tk.DoubleVar(value=self.config_data["max_duration"])
+        self.max_silence = tk.DoubleVar(value=self.config_data["max_silence"])
 
         self.log_queue: queue.Queue[str] = queue.Queue()
 
         self._build_ui()
         self._poll_log()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:
         main = ttk.Frame(self.root, padding=10)
@@ -311,8 +415,27 @@ class TranscriptionGUI:
         config_frame.pack(fill=tk.X, pady=5)
         self._add_labeled_entry(config_frame, "API Key", self.api_key, show="*")
         self._add_labeled_entry(config_frame, "API Host", self.api_host)
-        self._add_labeled_entry(config_frame, "Model", self.model)
-        self._add_labeled_entry(config_frame, "识别语言 (如 ja/en)", self.language)
+        self.model_combo = self._add_labeled_combobox(
+            config_frame,
+            "转录模型 (model)",
+            self.model,
+            self.config_data.get("models", DEFAULT_MODELS),
+            row=2,
+        )
+        ttk.Button(config_frame, text="刷新模型", command=self._reload_config).grid(
+            row=2,
+            column=2,
+            sticky=tk.W,
+            padx=5,
+            pady=2,
+        )
+        self._add_labeled_combobox(
+            config_frame,
+            "识别语言 (language)",
+            self.language,
+            [label for label, _ in LANGUAGE_OPTIONS],
+            row=3,
+        )
 
         options_frame = ttk.LabelFrame(main, text="识别与翻译")
         options_frame.pack(fill=tk.X, pady=5)
@@ -320,7 +443,20 @@ class TranscriptionGUI:
         ttk.Checkbutton(options_frame, text="输出翻译字幕", variable=self.enable_translation).grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
         ttk.Checkbutton(options_frame, text="开启语言自动识别", variable=self.enable_language_id).grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
         ttk.Checkbutton(options_frame, text="字词级自动分段", variable=self.enable_word_level).grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
-        self._add_labeled_entry(options_frame, "翻译目标语言", self.translation_target, row=2)
+        self._add_labeled_combobox(
+            options_frame,
+            "翻译目标语言",
+            self.translation_target,
+            [label for label, _ in LANGUAGE_OPTIONS],
+            row=2,
+        )
+        self.translation_model_combo = self._add_labeled_combobox(
+            options_frame,
+            "翻译模型",
+            self.translation_model,
+            self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS),
+            row=3,
+        )
 
         srt_frame = ttk.LabelFrame(main, text="SRT 输出设置")
         srt_frame.pack(fill=tk.X, pady=5)
@@ -345,6 +481,63 @@ class TranscriptionGUI:
         entry = ttk.Entry(parent, textvariable=variable, show=show)
         entry.grid(row=row, column=1, sticky=tk.EW, padx=5, pady=2)
         parent.columnconfigure(1, weight=1)
+
+    def _add_labeled_combobox(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        variable: tk.StringVar,
+        values: list[str],
+        row: int = 0,
+    ) -> ttk.Combobox:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly")
+        combo.grid(row=row, column=1, sticky=tk.EW, padx=5, pady=2)
+        parent.columnconfigure(1, weight=1)
+        return combo
+
+    def _language_label(self, code: str) -> str:
+        return self.language_labels.get(code, code)
+
+    def _language_code(self, label: str) -> str:
+        return self.language_codes.get(label, label)
+
+    def _reload_config(self) -> None:
+        self.config_data = load_config()
+        models = self.config_data.get("models", DEFAULT_MODELS)
+        translation_models = self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS)
+        self.model_combo["values"] = models
+        self.translation_model_combo["values"] = translation_models
+        self.model.set(self.config_data.get("model", self.model.get()))
+        self.translation_model.set(self.config_data.get("translation_model", self.translation_model.get()))
+
+    def _on_close(self) -> None:
+        self._save_config()
+        self.root.destroy()
+
+    def _save_config(self) -> None:
+        config = _default_config()
+        config.update(
+            {
+                "api_key": self.api_key.get(),
+                "api_host": self.api_host.get(),
+                "model": self.model.get(),
+                "translation_model": self.translation_model.get(),
+                "language": self._language_code(self.language.get()),
+                "translation_target": self._language_code(self.translation_target.get()),
+                "enable_language_identification": self.enable_language_id.get(),
+                "enable_word_level": self.enable_word_level.get(),
+                "enable_transcription": self.enable_transcription.get(),
+                "enable_translation": self.enable_translation.get(),
+                "max_chars": self.max_chars.get(),
+                "max_duration": self.max_duration.get(),
+                "max_silence": self.max_silence.get(),
+                "models": self.config_data.get("models", DEFAULT_MODELS),
+                "translation_models": self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS),
+                "languages": [code for _, code in LANGUAGE_OPTIONS],
+            }
+        )
+        save_config(config)
 
     def _select_file(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Audio", "*.wav *.mp3 *.m4a *.flac *.ogg")])
@@ -377,6 +570,7 @@ class TranscriptionGUI:
             messagebox.showerror("提示", "请至少选择一个输出选项")
             return
 
+        self._save_config()
         thread = threading.Thread(target=self._run_transcription, daemon=True)
         thread.start()
 
@@ -388,10 +582,13 @@ class TranscriptionGUI:
                 api_key=self.api_key.get(),
                 audio_path=self.audio_path.get(),
                 model=self.model.get(),
-                language=self.language.get(),
+                translation_model=self.translation_model.get(),
+                language=self._language_code(self.language.get()),
                 enable_language_identification=self.enable_language_id.get(),
                 enable_word_level=self.enable_word_level.get(),
-                translation_target=self.translation_target.get() if self.enable_translation.get() else None,
+                translation_target=self._language_code(self.translation_target.get())
+                if self.enable_translation.get()
+                else None,
             )
         except HTTPError as error:
             self._log(f"HTTP 错误: {error.code} {error.reason}")
@@ -407,7 +604,7 @@ class TranscriptionGUI:
         if self.enable_transcription.get():
             transcription_srt = build_srt(
                 payload,
-                language=self.language.get(),
+                language=self._language_code(self.language.get()),
                 use_word_level=self.enable_word_level.get(),
                 max_chars_per_line=self.max_chars.get(),
                 max_duration=self.max_duration.get(),
@@ -424,7 +621,7 @@ class TranscriptionGUI:
         if self.enable_translation.get():
             translation_srt = build_srt(
                 payload,
-                language=self.translation_target.get(),
+                language=self._language_code(self.translation_target.get()),
                 use_word_level=self.enable_word_level.get(),
                 max_chars_per_line=self.max_chars.get(),
                 max_duration=self.max_duration.get(),
