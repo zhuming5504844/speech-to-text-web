@@ -8,7 +8,6 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Iterable, Optional
 
 import importlib.util
-import json
 import requests
 from requests import Session
 
@@ -26,6 +25,7 @@ else:
 class TranscriptionResult:
     transcript_srt_path: Optional[str]
     translation_srt_path: Optional[str]
+    log_path: Optional[str]
 
 
 @dataclass
@@ -115,35 +115,6 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
     return segments
 
 
-def align_translation_segments(
-    transcript_segments: Iterable[Segment], translation_tokens: list[dict]
-) -> list[Segment]:
-    aligned: list[Segment] = []
-    token_index = 0
-    total_tokens = len(translation_tokens)
-
-    for segment in transcript_segments:
-        segment_tokens: list[dict] = []
-        while token_index < total_tokens:
-            token = translation_tokens[token_index]
-            token_start = token.get("start_ms")
-            token_end = token.get("end_ms")
-            if token_start is None or token_end is None:
-                token_index += 1
-                continue
-            if token_end < segment.start_ms:
-                token_index += 1
-                continue
-            if token_start > segment.end_ms:
-                break
-            segment_tokens.append(token)
-            token_index += 1
-        text = "".join(item.get("text", "") for item in segment_tokens).strip()
-        aligned.append(Segment(start_ms=segment.start_ms, end_ms=segment.end_ms, text=text))
-
-    return aligned
-
-
 def segments_to_srt(segments: Iterable[Segment]) -> str:
     lines: list[str] = []
     for idx, segment in enumerate(segments, start=1):
@@ -152,13 +123,6 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
         lines.append(segment.text)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
-
-
-def segments_to_json(segments: Iterable[Segment]) -> list[dict]:
-    return [
-        {"start_ms": segment.start_ms, "end_ms": segment.end_ms, "text": segment.text}
-        for segment in segments
-    ]
 
 
 def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
@@ -259,7 +223,6 @@ def transcribe_file(
     srt_settings: SrtSettings,
     output_transcript: bool,
     output_translation: bool,
-    save_json: bool = True,
 ) -> TranscriptionResult:
     file_id = upload_audio(session, audio_path)
     config = get_config(
@@ -292,33 +255,32 @@ def transcribe_file(
         transcript_path = transcript_srt_path
 
     translation_path: Optional[str] = None
-    aligned_segments: list[Segment] = []
+    translation_segments: list[Segment] = []
     if output_translation:
-        aligned_segments = align_translation_segments(transcript_segments, translation_tokens)
+        translation_segments = build_segments(translation_tokens, srt_settings)
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(segments_to_srt(aligned_segments))
+            handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
 
-    if save_json:
-        json_path = os.path.join(output_dir, f"{base_name}.json")
-        payload = {
-            "model": model,
-            "language": language,
-            "enable_language_identification": enable_language_identification,
-            "enable_speaker_diarization": enable_speaker_diarization,
-            "target_language": target_language,
-            "srt_settings": {
-                "max_chars_per_segment": srt_settings.max_chars_per_segment,
-                "max_duration_s": srt_settings.max_duration_s,
-                "max_pause_s": srt_settings.max_pause_s,
-                "word_level_segmentation": srt_settings.word_level_segmentation,
-            },
-            "transcript_segments": segments_to_json(transcript_segments),
-            "translation_segments": segments_to_json(aligned_segments),
-            "tokens": tokens,
-        }
-        with open(json_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    log_path = os.path.join(output_dir, f"{base_name}.log.txt")
+    log_lines = [
+        f"Audio: {audio_path}",
+        f"Model: {model}",
+        f"Language: {language or 'auto'}",
+        f"Target language: {target_language or 'none'}",
+        f"Enable language identification: {enable_language_identification}",
+        f"Enable speaker diarization: {enable_speaker_diarization}",
+        f"Word-level segmentation: {srt_settings.word_level_segmentation}",
+        f"Max chars per segment: {srt_settings.max_chars_per_segment}",
+        f"Max duration (s): {srt_settings.max_duration_s}",
+        f"Max pause (s): {srt_settings.max_pause_s}",
+        f"Transcript segments: {len(transcript_segments)}",
+        f"Translation segments: {len(translation_segments)}",
+        f"Transcript SRT: {transcript_path or 'disabled'}",
+        f"Translation SRT: {translation_path or 'disabled'}",
+    ]
+    with open(log_path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(log_lines) + "\n")
 
     delete_transcription(session, transcription_id)
     delete_file(session, file_id)
@@ -326,6 +288,7 @@ def transcribe_file(
     return TranscriptionResult(
         transcript_srt_path=transcript_path,
         translation_srt_path=translation_path,
+        log_path=log_path,
     )
 
 
@@ -377,20 +340,10 @@ class SonioxGui:
         browse_button = ttk.Button(file_frame, text="选择文件", command=self._select_file)
         browse_button.grid(row=0, column=1, padx=8, pady=8, sticky=tk.E)
 
-        self.drop_label = ttk.Label(
-            file_frame,
-            text="拖动音频文件到此处",
-            relief=tk.RIDGE,
-            padding=10,
-        )
-        self.drop_label.grid(row=1, column=0, columnspan=2, sticky=tk.EW, padx=8, pady=(0, 8))
-        file_frame.columnconfigure(0, weight=1)
-
         if TK_DND_AVAILABLE:
-            self.drop_label.drop_target_register(DND_FILES)
-            self.drop_label.dnd_bind("<<Drop>>", self._on_drop)
-        else:
-            self.drop_label.configure(text="未检测到拖拽插件，请使用选择文件按钮。")
+            file_entry.drop_target_register(DND_FILES)
+            file_entry.dnd_bind("<<Drop>>", self._on_drop)
+        file_frame.columnconfigure(0, weight=1)
 
         api_frame = ttk.LabelFrame(self.root, text="API 配置")
         api_frame.pack(fill=tk.X, padx=12, pady=8)
@@ -601,12 +554,13 @@ class SonioxGui:
                 srt_settings=srt_settings,
                 output_transcript=output_transcript,
                 output_translation=output_translation,
-                save_json=True,
             )
             if result.transcript_srt_path:
                 self._log(f"转录完成: {result.transcript_srt_path}")
             if result.translation_srt_path:
                 self._log(f"翻译完成: {result.translation_srt_path}")
+            if result.log_path:
+                self._log(f"日志已保存: {result.log_path}")
         except Exception as exc:
             self._log(f"转录失败: {exc}")
         finally:
@@ -648,7 +602,6 @@ def main() -> None:
     parser.add_argument("--max_duration", type=float, default=6.0)
     parser.add_argument("--max_pause", type=float, default=1.0)
     parser.add_argument("--word_segmentation", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--save_json", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--api_key", help="Soniox API key (fallback to SONIOX_API_KEY)")
     args = parser.parse_args()
 
@@ -678,12 +631,13 @@ def main() -> None:
             srt_settings=srt_settings,
             output_transcript=args.output_transcript,
             output_translation=args.output_translation,
-            save_json=args.save_json,
         )
         if result.transcript_srt_path:
             print(f"Transcript: {result.transcript_srt_path}")
         if result.translation_srt_path:
             print(f"Translation: {result.translation_srt_path}")
+        if result.log_path:
+            print(f"Log: {result.log_path}")
         return
 
     gui = SonioxGui()
