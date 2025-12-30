@@ -335,7 +335,11 @@ def soniox_transcribe(
     body, boundary = _build_multipart(fields, "audio", audio_path, audio_data)
 
     api_host = api_host.rstrip("/")
-    urls = [f"{api_host}/v1/transcribe", f"{api_host}/transcribe"]
+    urls = [
+        f"{api_host}/stt/v1/transcribe",
+        f"{api_host}/v1/transcribe",
+        f"{api_host}/transcribe",
+    ]
 
     last_error: Optional[HTTPError] = None
     for url in urls:
