@@ -38,49 +38,43 @@ DEFAULT_MODELS = [
     "stt-rt",
 ]
 
-DEFAULT_TRANSLATION_MODELS = [
-    "default",
-]
-
 LANGUAGE_OPTIONS: list[tuple[str, str]] = [
-    ("日本語 (ja)", "ja"),
-    ("English (en)", "en"),
-    ("多语言 (multi)", "multi"),
-    ("中文 (zh)", "zh"),
-    ("한국어 (ko)", "ko"),
-    ("Español (es)", "es"),
-    ("Français (fr)", "fr"),
-    ("Deutsch (de)", "de"),
-    ("Italiano (it)", "it"),
-    ("Português (pt)", "pt"),
-    ("Русский (ru)", "ru"),
-    ("हिन्दी (hi)", "hi"),
-    ("Bahasa Indonesia (id)", "id"),
-    ("ไทย (th)", "th"),
-    ("Tiếng Việt (vi)", "vi"),
-    ("العربية (ar)", "ar"),
-    ("Türkçe (tr)", "tr"),
-    ("Nederlands (nl)", "nl"),
-    ("Svenska (sv)", "sv"),
-    ("Norsk (no)", "no"),
-    ("Dansk (da)", "da"),
-    ("Suomi (fi)", "fi"),
-    ("Polski (pl)", "pl"),
-    ("Čeština (cs)", "cs"),
-    ("Українська (uk)", "uk"),
-    ("Ελληνικά (el)", "el"),
-    ("עברית (he)", "he"),
-    ("Română (ro)", "ro"),
-    ("Magyar (hu)", "hu"),
+    ("日语 ja", "ja"),
+    ("英语 en", "en"),
+    ("多语言 multi", "multi"),
+    ("中文 zh", "zh"),
+    ("韩语 ko", "ko"),
+    ("西班牙语 es", "es"),
+    ("法语 fr", "fr"),
+    ("德语 de", "de"),
+    ("意大利语 it", "it"),
+    ("葡萄牙语 pt", "pt"),
+    ("俄语 ru", "ru"),
+    ("印地语 hi", "hi"),
+    ("印尼语 id", "id"),
+    ("泰语 th", "th"),
+    ("越南语 vi", "vi"),
+    ("阿拉伯语 ar", "ar"),
+    ("土耳其语 tr", "tr"),
+    ("荷兰语 nl", "nl"),
+    ("瑞典语 sv", "sv"),
+    ("挪威语 no", "no"),
+    ("丹麦语 da", "da"),
+    ("芬兰语 fi", "fi"),
+    ("波兰语 pl", "pl"),
+    ("捷克语 cs", "cs"),
+    ("乌克兰语 uk", "uk"),
+    ("希腊语 el", "el"),
+    ("希伯来语 he", "he"),
+    ("罗马尼亚语 ro", "ro"),
+    ("匈牙利语 hu", "hu"),
 ]
 
 
 def _default_config() -> dict[str, Any]:
     return {
         "api_key": "",
-        "api_host": "https://api.soniox.com",
         "model": "stt-async",
-        "translation_model": "default",
         "language": "ja",
         "translation_target": "en",
         "enable_language_identification": False,
@@ -91,7 +85,6 @@ def _default_config() -> dict[str, Any]:
         "max_duration": 6.0,
         "max_silence": 1.0,
         "models": DEFAULT_MODELS,
-        "translation_models": DEFAULT_TRANSLATION_MODELS,
         "languages": [code for _, code in LANGUAGE_OPTIONS],
     }
 
@@ -112,10 +105,6 @@ def load_config() -> dict[str, Any]:
     if default_config.get("model") and default_config["model"] not in models:
         models.append(default_config["model"])
     default_config["models"] = models
-    translation_models = list(dict.fromkeys(default_config.get("translation_models", DEFAULT_TRANSLATION_MODELS)))
-    if default_config.get("translation_model") and default_config["translation_model"] not in translation_models:
-        translation_models.append(default_config["translation_model"])
-    default_config["translation_models"] = translation_models
     return default_config
 
 
@@ -321,7 +310,6 @@ def soniox_transcribe(
     api_key: str,
     audio_path: str,
     model: str,
-    translation_model: str,
     language: str,
     enable_language_identification: bool,
     enable_word_level: bool,
@@ -341,8 +329,6 @@ def soniox_transcribe(
             "type": "one_way",
             "target_language": translation_target,
         }
-        if translation_model:
-            config["translation"]["model"] = translation_model
 
     fields = {"config": json.dumps(config)}
     body, boundary = _build_multipart(fields, "audio", audio_path, audio_data)
@@ -377,9 +363,7 @@ class TranscriptionGUI:
 
         self.audio_path = tk.StringVar()
         self.api_key = tk.StringVar(value=self.config_data["api_key"])
-        self.api_host = tk.StringVar(value=self.config_data["api_host"])
         self.model = tk.StringVar(value=self.config_data["model"])
-        self.translation_model = tk.StringVar(value=self.config_data["translation_model"])
         self.language = tk.StringVar(value=self._language_label(self.config_data["language"]))
         self.translation_target = tk.StringVar(value=self._language_label(self.config_data["translation_target"]))
         self.enable_language_id = tk.BooleanVar(value=self.config_data["enable_language_identification"])
@@ -414,16 +398,15 @@ class TranscriptionGUI:
         config_frame = ttk.LabelFrame(main, text="API 配置")
         config_frame.pack(fill=tk.X, pady=5)
         self._add_labeled_entry(config_frame, "API Key", self.api_key, show="*")
-        self._add_labeled_entry(config_frame, "API Host", self.api_host)
         self.model_combo = self._add_labeled_combobox(
             config_frame,
             "转录模型 (model)",
             self.model,
             self.config_data.get("models", DEFAULT_MODELS),
-            row=2,
+            row=1,
         )
         ttk.Button(config_frame, text="刷新模型", command=self._reload_config).grid(
-            row=2,
+            row=1,
             column=2,
             sticky=tk.W,
             padx=5,
@@ -434,7 +417,7 @@ class TranscriptionGUI:
             "识别语言 (language)",
             self.language,
             [label for label, _ in LANGUAGE_OPTIONS],
-            row=3,
+            row=2,
         )
 
         options_frame = ttk.LabelFrame(main, text="识别与翻译")
@@ -449,13 +432,6 @@ class TranscriptionGUI:
             self.translation_target,
             [label for label, _ in LANGUAGE_OPTIONS],
             row=2,
-        )
-        self.translation_model_combo = self._add_labeled_combobox(
-            options_frame,
-            "翻译模型",
-            self.translation_model,
-            self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS),
-            row=3,
         )
 
         srt_frame = ttk.LabelFrame(main, text="SRT 输出设置")
@@ -505,11 +481,8 @@ class TranscriptionGUI:
     def _reload_config(self) -> None:
         self.config_data = load_config()
         models = self.config_data.get("models", DEFAULT_MODELS)
-        translation_models = self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS)
         self.model_combo["values"] = models
-        self.translation_model_combo["values"] = translation_models
         self.model.set(self.config_data.get("model", self.model.get()))
-        self.translation_model.set(self.config_data.get("translation_model", self.translation_model.get()))
 
     def _on_close(self) -> None:
         self._save_config()
@@ -520,9 +493,7 @@ class TranscriptionGUI:
         config.update(
             {
                 "api_key": self.api_key.get(),
-                "api_host": self.api_host.get(),
                 "model": self.model.get(),
-                "translation_model": self.translation_model.get(),
                 "language": self._language_code(self.language.get()),
                 "translation_target": self._language_code(self.translation_target.get()),
                 "enable_language_identification": self.enable_language_id.get(),
@@ -533,7 +504,6 @@ class TranscriptionGUI:
                 "max_duration": self.max_duration.get(),
                 "max_silence": self.max_silence.get(),
                 "models": self.config_data.get("models", DEFAULT_MODELS),
-                "translation_models": self.config_data.get("translation_models", DEFAULT_TRANSLATION_MODELS),
                 "languages": [code for _, code in LANGUAGE_OPTIONS],
             }
         )
@@ -578,11 +548,10 @@ class TranscriptionGUI:
         self._log("开始上传并转录...")
         try:
             payload = soniox_transcribe(
-                api_host=self.api_host.get(),
+                api_host="https://api.soniox.com",
                 api_key=self.api_key.get(),
                 audio_path=self.audio_path.get(),
                 model=self.model.get(),
-                translation_model=self.translation_model.get(),
                 language=self._language_code(self.language.get()),
                 enable_language_identification=self.enable_language_id.get(),
                 enable_word_level=self.enable_word_level.get(),
