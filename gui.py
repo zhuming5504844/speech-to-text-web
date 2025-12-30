@@ -33,6 +33,7 @@ CONFIG_FILENAME = "gui_config.json"
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), CONFIG_FILENAME)
 
 DEFAULT_MODELS = [
+    "stt-async-v3",
     "stt-async",
     "stt-rt-preview",
     "stt-rt",
@@ -74,7 +75,7 @@ LANGUAGE_OPTIONS: list[tuple[str, str]] = [
 def _default_config() -> dict[str, Any]:
     return {
         "api_key": "",
-        "model": "stt-async",
+        "model": "stt-async-v3",
         "language": "ja",
         "translation_target": "en",
         "enable_language_identification": False,
@@ -405,13 +406,6 @@ class TranscriptionGUI:
             self.config_data.get("models", DEFAULT_MODELS),
             row=1,
         )
-        ttk.Button(config_frame, text="刷新模型", command=self._reload_config).grid(
-            row=1,
-            column=2,
-            sticky=tk.W,
-            padx=5,
-            pady=2,
-        )
         self._add_labeled_combobox(
             config_frame,
             "识别语言 (language)",
@@ -467,7 +461,7 @@ class TranscriptionGUI:
         row: int = 0,
     ) -> ttk.Combobox:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly")
+        combo = ttk.Combobox(parent, textvariable=variable, values=values)
         combo.grid(row=row, column=1, sticky=tk.EW, padx=5, pady=2)
         parent.columnconfigure(1, weight=1)
         return combo
@@ -477,12 +471,6 @@ class TranscriptionGUI:
 
     def _language_code(self, label: str) -> str:
         return self.language_codes.get(label, label)
-
-    def _reload_config(self) -> None:
-        self.config_data = load_config()
-        models = self.config_data.get("models", DEFAULT_MODELS)
-        self.model_combo["values"] = models
-        self.model.set(self.config_data.get("model", self.model.get()))
 
     def _on_close(self) -> None:
         self._save_config()
