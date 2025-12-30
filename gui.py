@@ -335,15 +335,26 @@ def soniox_transcribe(
     body, boundary = _build_multipart(fields, "audio", audio_path, audio_data)
 
     api_host = api_host.rstrip("/")
-    url = f"{api_host}/v1/transcribe"
-    request = Request(url, data=body)
-    request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    request.add_header("Authorization", f"Bearer {api_key}")
-    request.add_header("X-API-Key", api_key)
+    urls = [f"{api_host}/v1/transcribe", f"{api_host}/transcribe"]
 
-    with urlopen(request, timeout=300) as response:
-        payload = response.read()
-    return json.loads(payload.decode("utf-8"))
+    last_error: Optional[HTTPError] = None
+    for url in urls:
+        request = Request(url, data=body)
+        request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        request.add_header("Authorization", f"Bearer {api_key}")
+        request.add_header("X-API-Key", api_key)
+        try:
+            with urlopen(request, timeout=300) as response:
+                payload = response.read()
+            return json.loads(payload.decode("utf-8"))
+        except HTTPError as error:
+            last_error = error
+            if error.code != 404:
+                raise
+
+    if last_error is not None:
+        raise last_error
+    raise HTTPError(urls[-1], 404, "Not Found", {}, None)
 
 
 def _safe_write(path: str, content: str) -> None:
@@ -390,7 +401,7 @@ class TranscriptionGUI:
         ttk.Entry(file_frame, textvariable=self.audio_path).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=5)
         ttk.Button(file_frame, text="选择文件", command=self._select_file).pack(side=tk.LEFT, padx=5)
 
-        drop_label = ttk.Label(file_frame, text="拖动音频文件到这里")
+        drop_label = ttk.Label(file_frame, text="")
         drop_label.pack(side=tk.LEFT, padx=5)
         if TkinterDnD and DND_FILES:
             drop_label.drop_target_register(DND_FILES)
