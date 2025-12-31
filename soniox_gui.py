@@ -312,13 +312,9 @@ class SonioxGui:
         self.language_var = tk.StringVar(value=settings.get("language", "日语 ja"))
         self.output_transcript_var = tk.BooleanVar(value=settings.get("output_transcript", True))
         self.output_translation_var = tk.BooleanVar(value=settings.get("output_translation", True))
-        self.enable_language_id_var = tk.BooleanVar(
-            value=settings.get("enable_language_identification", False)
-        )
-        self.enable_speaker_diarization_var = tk.BooleanVar(
-            value=settings.get("enable_speaker_diarization", False)
-        )
-        self.word_segmentation_var = tk.BooleanVar(value=settings.get("word_segmentation", False))
+        self.enable_language_id_var = tk.BooleanVar(value=False)
+        self.enable_speaker_diarization_var = tk.BooleanVar(value=False)
+        self.word_segmentation_var = tk.BooleanVar(value=False)
         self.target_language_var = tk.StringVar(value=settings.get("target_language", "中文 zh"))
         self.max_chars_var = tk.StringVar(value=str(settings.get("max_chars", "16")))
         self.max_duration_var = tk.StringVar(value=str(settings.get("max_duration", "6.0")))
@@ -357,9 +353,6 @@ class SonioxGui:
             "language": self.language_var.get().strip(),
             "output_transcript": self.output_transcript_var.get(),
             "output_translation": self.output_translation_var.get(),
-            "enable_language_identification": self.enable_language_id_var.get(),
-            "enable_speaker_diarization": self.enable_speaker_diarization_var.get(),
-            "word_segmentation": self.word_segmentation_var.get(),
             "target_language": self.target_language_var.get().strip(),
             "max_chars": self.max_chars_var.get().strip(),
             "max_duration": self.max_duration_var.get().strip(),
