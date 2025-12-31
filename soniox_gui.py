@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ import requests
 from requests import Session
 
 SONIOX_API_BASE_URL = "https://api.soniox.com"
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".soniox_gui_settings.json")
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
 if TK_DND_AVAILABLE:
@@ -123,6 +125,7 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
         lines.append(segment.text)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
 
 
 def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
@@ -294,6 +297,7 @@ def transcribe_file(
 
 class SonioxGui:
     def __init__(self) -> None:
+        settings = self._load_settings()
         if TK_DND_AVAILABLE:
             self.root = TkinterDnD.Tk()  # type: ignore[misc]
         else:
@@ -303,18 +307,24 @@ class SonioxGui:
         self.root.minsize(760, 640)
 
         self.file_path_var = tk.StringVar()
-        self.api_key_var = tk.StringVar(value=os.environ.get("SONIOX_API_KEY", ""))
-        self.model_var = tk.StringVar(value="stt-async-v3")
-        self.language_var = tk.StringVar(value="日语 ja")
-        self.output_transcript_var = tk.BooleanVar(value=True)
-        self.output_translation_var = tk.BooleanVar(value=True)
-        self.enable_language_id_var = tk.BooleanVar(value=True)
-        self.enable_speaker_diarization_var = tk.BooleanVar(value=False)
-        self.word_segmentation_var = tk.BooleanVar(value=True)
-        self.target_language_var = tk.StringVar(value="中文 zh")
-        self.max_chars_var = tk.StringVar(value="16")
-        self.max_duration_var = tk.StringVar(value="6.0")
-        self.max_pause_var = tk.StringVar(value="1.0")
+        self.api_key_var = tk.StringVar(
+            value=settings.get("api_key") or os.environ.get("SONIOX_API_KEY", "")
+        )
+        self.model_var = tk.StringVar(value=settings.get("model", "stt-async-v3"))
+        self.language_var = tk.StringVar(value=settings.get("language", "日语 ja"))
+        self.output_transcript_var = tk.BooleanVar(value=settings.get("output_transcript", True))
+        self.output_translation_var = tk.BooleanVar(value=settings.get("output_translation", True))
+        self.enable_language_id_var = tk.BooleanVar(
+            value=settings.get("enable_language_identification", False)
+        )
+        self.enable_speaker_diarization_var = tk.BooleanVar(
+            value=settings.get("enable_speaker_diarization", False)
+        )
+        self.word_segmentation_var = tk.BooleanVar(value=settings.get("word_segmentation", False))
+        self.target_language_var = tk.StringVar(value=settings.get("target_language", "中文 zh"))
+        self.max_chars_var = tk.StringVar(value=str(settings.get("max_chars", "16")))
+        self.max_duration_var = tk.StringVar(value=str(settings.get("max_duration", "6.0")))
+        self.max_pause_var = tk.StringVar(value=str(settings.get("max_pause", "1.0")))
 
         self._log_lock = threading.Lock()
 
@@ -331,6 +341,42 @@ class SonioxGui:
         self.language_map = {label: code for label, code in self.language_options}
 
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _load_settings(self) -> dict:
+        if not os.path.exists(SETTINGS_PATH):
+            return {}
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_settings(self) -> None:
+        settings = {
+            "api_key": self.api_key_var.get().strip(),
+            "model": self.model_var.get().strip(),
+            "language": self.language_var.get().strip(),
+            "output_transcript": self.output_transcript_var.get(),
+            "output_translation": self.output_translation_var.get(),
+            "enable_language_identification": self.enable_language_id_var.get(),
+            "enable_speaker_diarization": self.enable_speaker_diarization_var.get(),
+            "word_segmentation": self.word_segmentation_var.get(),
+            "target_language": self.target_language_var.get().strip(),
+            "max_chars": self.max_chars_var.get().strip(),
+            "max_duration": self.max_duration_var.get().strip(),
+            "max_pause": self.max_pause_var.get().strip(),
+        }
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as handle:
+                json.dump(settings, handle, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _on_close(self) -> None:
+        self._save_settings()
+        self.root.destroy()
 
     def _build_ui(self) -> None:
         file_frame = ttk.LabelFrame(self.root, text="音频文件")
@@ -498,6 +544,7 @@ class SonioxGui:
             messagebox.showwarning("提示", "请选择翻译目标语言。")
             return
 
+        self._save_settings()
         srt_settings = SrtSettings(
             max_chars_per_segment=max_chars,
             max_duration_s=max_duration,
