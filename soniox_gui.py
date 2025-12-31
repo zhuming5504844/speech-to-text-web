@@ -20,7 +20,7 @@ else:
     DND_FILES = None
     TkinterDnD = None
 if TYPE_CHECKING:
-    from deepgram import DeepgramClient, FileSource, PrerecordedOptions
+    from deepgram import DeepgramClient, PrerecordedOptions
 
 
 @dataclass
@@ -230,12 +230,11 @@ def transcribe_file(
 ) -> TranscriptionResult:
     if not DEEPGRAM_AVAILABLE:
         raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
-    file_source_class = importlib.import_module("deepgram").FileSource
     mimetype, _ = mimetypes.guess_type(audio_path)
     if mimetype is None:
         mimetype = "audio/wav"
     with open(audio_path, "rb") as audio_file:
-        source = file_source_class(buffer=audio_file.read(), mimetype=mimetype)
+        source = {"buffer": audio_file.read(), "mimetype": mimetype}
     options = build_deepgram_options(
         model=model,
         language=language,
