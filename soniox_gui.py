@@ -5,14 +5,11 @@ import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
-from datetime import timedelta
-from itertools import zip_longest
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable, Optional
 
 import importlib.util
 import requests
-import srt
 from requests import Session
 
 SONIOX_API_BASE_URL = "https://api.soniox.com"
@@ -30,7 +27,6 @@ else:
 class TranscriptionResult:
     transcript_srt_path: Optional[str]
     translation_srt_path: Optional[str]
-    bilingual_srt_path: Optional[str]
     log_path: Optional[str]
 
 
@@ -130,32 +126,6 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
         lines.append("")
     return "\n".join(lines).strip() + "\n"
 
-
-def build_bilingual_srt(
-    transcript_segments: Iterable[Segment], translation_segments: Iterable[Segment]
-) -> str:
-    subtitles: list[srt.Subtitle] = []
-    for idx, (transcript, translation) in enumerate(
-        zip_longest(transcript_segments, translation_segments), start=1
-    ):
-        if transcript is None and translation is None:
-            continue
-        start_ms = transcript.start_ms if transcript else translation.start_ms
-        end_ms = transcript.end_ms if transcript else translation.end_ms
-        lines: list[str] = []
-        if transcript and transcript.text:
-            lines.append(transcript.text)
-        if translation and translation.text:
-            lines.append(translation.text)
-        subtitles.append(
-            srt.Subtitle(
-                index=idx,
-                start=timedelta(milliseconds=start_ms),
-                end=timedelta(milliseconds=end_ms),
-                content="\n".join(lines).strip(),
-            )
-        )
-    return srt.compose(subtitles)
 
 
 def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
@@ -279,7 +249,6 @@ def transcribe_file(
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
     translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
-    bilingual_srt_path = os.path.join(output_dir, f"{base_name}.bilingual.srt")
 
     transcript_segments = build_segments(transcript_tokens, srt_settings)
     transcript_path: Optional[str] = None
@@ -295,12 +264,6 @@ def transcribe_file(
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
-
-    bilingual_path: Optional[str] = None
-    if output_transcript and output_translation:
-        with open(bilingual_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(build_bilingual_srt(transcript_segments, translation_segments))
-        bilingual_path = bilingual_srt_path
 
     log_path = os.path.join(output_dir, f"{base_name}.log.txt")
     log_lines = [
@@ -318,7 +281,6 @@ def transcribe_file(
         f"Translation segments: {len(translation_segments)}",
         f"Transcript SRT: {transcript_path or 'disabled'}",
         f"Translation SRT: {translation_path or 'disabled'}",
-        f"Bilingual SRT: {bilingual_path or 'disabled'}",
     ]
     with open(log_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(log_lines) + "\n")
@@ -329,7 +291,6 @@ def transcribe_file(
     return TranscriptionResult(
         transcript_srt_path=transcript_path,
         translation_srt_path=translation_path,
-        bilingual_srt_path=bilingual_path,
         log_path=log_path,
     )
 
@@ -643,8 +604,6 @@ class SonioxGui:
                 self._log(f"转录完成: {result.transcript_srt_path}")
             if result.translation_srt_path:
                 self._log(f"翻译完成: {result.translation_srt_path}")
-            if result.bilingual_srt_path:
-                self._log(f"双语字幕完成: {result.bilingual_srt_path}")
             if result.log_path:
                 self._log(f"日志已保存: {result.log_path}")
         except Exception as exc:
@@ -722,8 +681,6 @@ def main() -> None:
             print(f"Transcript: {result.transcript_srt_path}")
         if result.translation_srt_path:
             print(f"Translation: {result.translation_srt_path}")
-        if result.bilingual_srt_path:
-            print(f"Bilingual: {result.bilingual_srt_path}")
         if result.log_path:
             print(f"Log: {result.log_path}")
         return
