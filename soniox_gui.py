@@ -20,7 +20,7 @@ else:
     DND_FILES = None
     TkinterDnD = None
 if TYPE_CHECKING:
-    from deepgram import DeepgramClient, PrerecordedOptions
+    from deepgram import DeepgramClient
 
 
 @dataclass
@@ -145,20 +145,19 @@ def build_deepgram_options(
     enable_language_identification: bool,
     enable_speaker_diarization: bool,
     target_language: Optional[str],
-) -> "PrerecordedOptions":
+) -> dict:
     if not DEEPGRAM_AVAILABLE:
         raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
-    options_class = importlib.import_module("deepgram").PrerecordedOptions
-    options = options_class(
-        model=model,
-        language=language or None,
-        detect_language=enable_language_identification,
-        diarize=enable_speaker_diarization,
-        punctuate=True,
-        smart_format=True,
-    )
-    if target_language and hasattr(options, "translate"):
-        options.translate = target_language
+    options = {
+        "model": model,
+        "language": language or None,
+        "detect_language": enable_language_identification,
+        "diarize": enable_speaker_diarization,
+        "punctuate": True,
+        "smart_format": True,
+    }
+    if target_language:
+        options["translate"] = target_language
     return options
 
 
