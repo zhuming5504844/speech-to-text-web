@@ -299,7 +299,8 @@ class SonioxGui:
         else:
             self.root = tk.Tk()
         self.root.title("Soniox Audio → SRT GUI")
-        self.root.geometry("760x560")
+        self.root.geometry("760x680")
+        self.root.minsize(760, 640)
 
         self.file_path_var = tk.StringVar()
         self.api_key_var = tk.StringVar(value=os.environ.get("SONIOX_API_KEY", ""))
@@ -437,7 +438,7 @@ class SonioxGui:
 
         log_frame = ttk.LabelFrame(self.root, text="日志")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
-        self.log_text = tk.Text(log_frame, height=10, wrap=tk.WORD)
+        self.log_text = tk.Text(log_frame, height=14, wrap=tk.WORD)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0), pady=8)
         scrollbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=8)
