@@ -1,4 +1,6 @@
 import argparse
+import importlib
+import importlib.util
 import json
 import mimetypes
 import os
@@ -6,19 +8,19 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
-from typing import Iterable, Optional
-
-import importlib.util
-from deepgram import DeepgramClient, FileSource, PrerecordedOptions
+from typing import TYPE_CHECKING, Iterable, Optional
 
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".deepgram_gui_settings.json")
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
+DEEPGRAM_AVAILABLE = importlib.util.find_spec("deepgram") is not None
 if TK_DND_AVAILABLE:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 else:
     DND_FILES = None
     TkinterDnD = None
+if TYPE_CHECKING:
+    from deepgram import DeepgramClient, FileSource, PrerecordedOptions
 
 
 @dataclass
@@ -143,8 +145,11 @@ def build_deepgram_options(
     enable_language_identification: bool,
     enable_speaker_diarization: bool,
     target_language: Optional[str],
-) -> PrerecordedOptions:
-    options = PrerecordedOptions(
+) -> "PrerecordedOptions":
+    if not DEEPGRAM_AVAILABLE:
+        raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
+    options_class = importlib.import_module("deepgram").PrerecordedOptions
+    options = options_class(
         model=model,
         language=language or None,
         detect_language=enable_language_identification,
@@ -203,8 +208,15 @@ def extract_tokens_from_response(result: dict) -> tuple[list[dict], list[dict]]:
     return transcript_tokens, translation_tokens
 
 
+def create_deepgram_client(api_key: str) -> "DeepgramClient":
+    if not DEEPGRAM_AVAILABLE:
+        raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
+    client_class = importlib.import_module("deepgram").DeepgramClient
+    return client_class(api_key)
+
+
 def transcribe_file(
-    deepgram_client: DeepgramClient,
+    deepgram_client: "DeepgramClient",
     audio_path: str,
     output_dir: str,
     model: str,
@@ -216,11 +228,14 @@ def transcribe_file(
     output_transcript: bool,
     output_translation: bool,
 ) -> TranscriptionResult:
+    if not DEEPGRAM_AVAILABLE:
+        raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
+    file_source_class = importlib.import_module("deepgram").FileSource
     mimetype, _ = mimetypes.guess_type(audio_path)
     if mimetype is None:
         mimetype = "audio/wav"
     with open(audio_path, "rb") as audio_file:
-        source: FileSource = {"buffer": audio_file.read(), "mimetype": mimetype}
+        source = file_source_class(buffer=audio_file.read(), mimetype=mimetype)
     options = build_deepgram_options(
         model=model,
         language=language,
@@ -574,7 +589,7 @@ class DeepgramGui:
         api_key: str,
     ) -> None:
         try:
-            deepgram_client = DeepgramClient(api_key)
+            deepgram_client = create_deepgram_client(api_key)
             result = transcribe_file(
                 deepgram_client=deepgram_client,
                 audio_path=file_path,
@@ -646,7 +661,7 @@ def main() -> None:
         api_key = args.api_key or os.environ.get("DEEPGRAM_API_KEY")
         if not api_key:
             raise RuntimeError("Missing DEEPGRAM_API_KEY")
-        deepgram_client = DeepgramClient(api_key)
+        deepgram_client = create_deepgram_client(api_key)
         srt_settings = SrtSettings(
             max_chars_per_segment=args.max_chars,
             max_duration_s=args.max_duration,
