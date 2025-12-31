@@ -307,7 +307,9 @@ class SonioxGui:
         self.root.minsize(760, 640)
 
         self.file_path_var = tk.StringVar()
-        self.api_key_var = tk.StringVar(value=os.environ.get("SONIOX_API_KEY", ""))
+        self.api_key_var = tk.StringVar(
+            value=settings.get("api_key") or os.environ.get("SONIOX_API_KEY", "")
+        )
         self.model_var = tk.StringVar(value=settings.get("model", "stt-async-v3"))
         self.language_var = tk.StringVar(value=settings.get("language", "日语 ja"))
         self.output_transcript_var = tk.BooleanVar(value=settings.get("output_transcript", True))
@@ -353,6 +355,7 @@ class SonioxGui:
 
     def _save_settings(self) -> None:
         settings = {
+            "api_key": self.api_key_var.get().strip(),
             "model": self.model_var.get().strip(),
             "language": self.language_var.get().strip(),
             "output_transcript": self.output_transcript_var.get(),
