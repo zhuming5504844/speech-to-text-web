@@ -1,3 +1,2 @@
-requests
 tkinterdnd2
-soniox-sdk==0.1.6
+deepgram-sdk

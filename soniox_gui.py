@@ -1,19 +1,17 @@
 import argparse
 import json
+import mimetypes
 import os
 import threading
-import time
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable, Optional
 
 import importlib.util
-import requests
-from requests import Session
+from deepgram import DeepgramClient, FileSource, PrerecordedOptions
 
-SONIOX_API_BASE_URL = "https://api.soniox.com"
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".soniox_gui_settings.json")
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".deepgram_gui_settings.json")
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
 if TK_DND_AVAILABLE:
@@ -131,7 +129,7 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
 def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
     filtered: list[dict] = []
     for token in tokens:
-        is_translation = token.get("translation_status") == "translation"
+        is_translation = token.get("translation", False)
         if translation_only and is_translation:
             filtered.append(token)
         elif not translation_only and not is_translation:
@@ -139,83 +137,74 @@ def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
     return filtered
 
 
-def get_config(
-    audio_url: Optional[str],
-    file_id: Optional[str],
+def build_deepgram_options(
     model: str,
     language: Optional[str],
     enable_language_identification: bool,
     enable_speaker_diarization: bool,
     target_language: Optional[str],
-) -> dict:
-    config = {
-        "model": model,
-        "enable_language_identification": enable_language_identification,
-        "enable_speaker_diarization": enable_speaker_diarization,
-        "audio_url": audio_url,
-        "file_id": file_id,
-    }
-
-    if language:
-        config["language_hints"] = [language]
-
-    if target_language:
-        config["translation"] = {
-            "type": "one_way",
-            "target_language": target_language,
-        }
-
-    return config
-
-
-def upload_audio(session: Session, audio_path: str) -> str:
-    with open(audio_path, "rb") as audio_file:
-        res = session.post(
-            f"{SONIOX_API_BASE_URL}/v1/files",
-            files={"file": audio_file},
-        )
-    res.raise_for_status()
-    return res.json()["id"]
-
-
-def create_transcription(session: Session, config: dict) -> str:
-    res = session.post(f"{SONIOX_API_BASE_URL}/v1/transcriptions", json=config)
-    res.raise_for_status()
-    return res.json()["id"]
-
-
-def wait_until_completed(session: Session, transcription_id: str) -> None:
-    while True:
-        res = session.get(f"{SONIOX_API_BASE_URL}/v1/transcriptions/{transcription_id}")
-        res.raise_for_status()
-        data = res.json()
-        if data["status"] == "completed":
-            return
-        if data["status"] == "error":
-            raise RuntimeError(data.get("error_message", "Unknown error"))
-        time.sleep(1)
-
-
-def get_transcription(session: Session, transcription_id: str) -> dict:
-    res = session.get(
-        f"{SONIOX_API_BASE_URL}/v1/transcriptions/{transcription_id}/transcript"
+) -> PrerecordedOptions:
+    options = PrerecordedOptions(
+        model=model,
+        language=language or None,
+        detect_language=enable_language_identification,
+        diarize=enable_speaker_diarization,
+        punctuate=True,
+        smart_format=True,
     )
-    res.raise_for_status()
-    return res.json()
+    if target_language and hasattr(options, "translate"):
+        options.translate = target_language
+    return options
 
 
-def delete_transcription(session: Session, transcription_id: str) -> None:
-    res = session.delete(f"{SONIOX_API_BASE_URL}/v1/transcriptions/{transcription_id}")
-    res.raise_for_status()
+def extract_tokens_from_response(result: dict) -> tuple[list[dict], list[dict]]:
+    channels = result.get("results", {}).get("channels", [])
+    if not channels:
+        return [], []
+    alternatives = channels[0].get("alternatives", [])
+    if not alternatives:
+        return [], []
+    alternative = alternatives[0]
+    words = alternative.get("words", [])
+    transcript_tokens: list[dict] = []
+    for word in words:
+        start = word.get("start")
+        end = word.get("end")
+        text = word.get("punctuated_word") or word.get("word") or ""
+        if start is None or end is None:
+            continue
+        transcript_tokens.append(
+            {
+                "start_ms": int(start * 1000),
+                "end_ms": int(end * 1000),
+                "text": f"{text} ",
+                "translation": False,
+            }
+        )
 
-
-def delete_file(session: Session, file_id: str) -> None:
-    res = session.delete(f"{SONIOX_API_BASE_URL}/v1/files/{file_id}")
-    res.raise_for_status()
+    translation_tokens: list[dict] = []
+    translations = alternative.get("translations") or {}
+    translated_words = translations.get("words") if isinstance(translations, dict) else None
+    if isinstance(translated_words, list):
+        for word in translated_words:
+            start = word.get("start")
+            end = word.get("end")
+            text = word.get("punctuated_word") or word.get("word") or ""
+            if start is None or end is None:
+                continue
+            translation_tokens.append(
+                {
+                    "start_ms": int(start * 1000),
+                    "end_ms": int(end * 1000),
+                    "text": f"{text} ",
+                    "translation": True,
+                }
+            )
+    return transcript_tokens, translation_tokens
 
 
 def transcribe_file(
-    session: Session,
+    deepgram_client: DeepgramClient,
     audio_path: str,
     output_dir: str,
     model: str,
@@ -227,24 +216,24 @@ def transcribe_file(
     output_transcript: bool,
     output_translation: bool,
 ) -> TranscriptionResult:
-    file_id = upload_audio(session, audio_path)
-    config = get_config(
-        None,
-        file_id,
-        model,
-        language,
-        enable_language_identification,
-        enable_speaker_diarization,
-        target_language if output_translation else None,
+    mimetype, _ = mimetypes.guess_type(audio_path)
+    if mimetype is None:
+        mimetype = "audio/wav"
+    with open(audio_path, "rb") as audio_file:
+        source: FileSource = {"buffer": audio_file.read(), "mimetype": mimetype}
+    options = build_deepgram_options(
+        model=model,
+        language=language,
+        enable_language_identification=enable_language_identification,
+        enable_speaker_diarization=enable_speaker_diarization,
+        target_language=target_language if output_translation else None,
     )
+    response = deepgram_client.listen.prerecorded.v("1").transcribe_file(source, options)
+    result = response.to_dict() if hasattr(response, "to_dict") else response
 
-    transcription_id = create_transcription(session, config)
-    wait_until_completed(session, transcription_id)
-    result = get_transcription(session, transcription_id)
-
-    tokens = result.get("tokens", [])
-    transcript_tokens = filter_tokens(tokens, translation_only=False)
-    translation_tokens = filter_tokens(tokens, translation_only=True)
+    transcript_tokens, translation_tokens = extract_tokens_from_response(result)
+    transcript_tokens = filter_tokens(transcript_tokens, translation_only=False)
+    translation_tokens = filter_tokens(translation_tokens, translation_only=True)
 
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
@@ -285,9 +274,6 @@ def transcribe_file(
     with open(log_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(log_lines) + "\n")
 
-    delete_transcription(session, transcription_id)
-    delete_file(session, file_id)
-
     return TranscriptionResult(
         transcript_srt_path=transcript_path,
         translation_srt_path=translation_path,
@@ -295,27 +281,27 @@ def transcribe_file(
     )
 
 
-class SonioxGui:
+class DeepgramGui:
     def __init__(self) -> None:
         settings = self._load_settings()
         if TK_DND_AVAILABLE:
             self.root = TkinterDnD.Tk()  # type: ignore[misc]
         else:
             self.root = tk.Tk()
-        self.root.title("Soniox Audio → SRT GUI")
+        self.root.title("Deepgram Audio → SRT GUI")
         self.root.geometry("760x680")
         self.root.minsize(760, 640)
 
         self.file_path_var = tk.StringVar()
         self.api_key_var = tk.StringVar(
-            value=settings.get("api_key") or os.environ.get("SONIOX_API_KEY", "")
+            value=settings.get("api_key") or os.environ.get("DEEPGRAM_API_KEY", "")
         )
-        self.model_var = tk.StringVar(value=settings.get("model", "stt-async-v3"))
+        self.model_var = tk.StringVar(value=settings.get("model", "nova-3"))
         self.language_var = tk.StringVar(value=settings.get("language", "日语 ja"))
         self.output_transcript_var = tk.BooleanVar(value=settings.get("output_transcript", True))
         self.output_translation_var = tk.BooleanVar(value=settings.get("output_translation", True))
         self.enable_language_id_var = tk.BooleanVar(
-            value=settings.get("enable_language_identification", False)
+            value=settings.get("enable_language_identification", True)
         )
         self.enable_speaker_diarization_var = tk.BooleanVar(
             value=settings.get("enable_speaker_diarization", False)
@@ -405,8 +391,8 @@ class SonioxGui:
         model_combo = ttk.Combobox(
             api_frame,
             textvariable=self.model_var,
-            values=["stt-async-v3", "stt-async-v2", "stt-rt-v3"],
-            state="readonly",
+            values=["nova-3", "nova-2-general", "nova-2-meeting", "nova-2-phonecall", "whisper-large"],
+            state="normal",
             width=24,
         )
         model_combo.grid(row=1, column=1, sticky=tk.W, padx=8, pady=6)
@@ -514,12 +500,12 @@ class SonioxGui:
         output_dir = os.path.dirname(file_path) or os.getcwd()
         os.makedirs(output_dir, exist_ok=True)
 
-        api_key = self.api_key_var.get().strip() or os.environ.get("SONIOX_API_KEY")
+        api_key = self.api_key_var.get().strip() or os.environ.get("DEEPGRAM_API_KEY")
         if not api_key:
-            messagebox.showerror("错误", "请先设置环境变量 SONIOX_API_KEY 或填写 API Key。")
+            messagebox.showerror("错误", "请先设置环境变量 DEEPGRAM_API_KEY 或填写 API Key。")
             return
 
-        model = self.model_var.get().strip() or "stt-async-v3"
+        model = self.model_var.get().strip() or "nova-3"
         language = self.language_map.get(self.language_var.get().strip(), "")
         target_language = self._get_language_code(self.target_language_var.get().strip())
         enable_language_identification = self.enable_language_id_var.get()
@@ -588,10 +574,9 @@ class SonioxGui:
         api_key: str,
     ) -> None:
         try:
-            session = requests.Session()
-            session.headers["Authorization"] = f"Bearer {api_key}"
+            deepgram_client = DeepgramClient(api_key)
             result = transcribe_file(
-                session=session,
+                deepgram_client=deepgram_client,
                 audio_path=file_path,
                 output_dir=output_dir,
                 model=model,
@@ -607,6 +592,8 @@ class SonioxGui:
                 self._log(f"转录完成: {result.transcript_srt_path}")
             if result.translation_srt_path:
                 self._log(f"翻译完成: {result.translation_srt_path}")
+            elif output_translation:
+                self._log("提示: 本次未返回翻译结果，请确认 Deepgram 是否支持所选目标语言。")
             if result.log_path:
                 self._log(f"日志已保存: {result.log_path}")
         except Exception as exc:
@@ -633,11 +620,11 @@ class SonioxGui:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Soniox GUI for SRT generation")
+    parser = argparse.ArgumentParser(description="Deepgram GUI for SRT generation")
     parser.add_argument("--no-gui", action="store_true", help="Run without GUI")
     parser.add_argument("--audio_path", help="Audio file path for CLI mode")
     parser.add_argument("--output_dir", default=os.getcwd())
-    parser.add_argument("--model", default="stt-async-v3")
+    parser.add_argument("--model", default="nova-3")
     parser.add_argument("--language", default="ja")
     parser.add_argument(
         "--enable_language_identification", action=argparse.BooleanOptionalAction, default=True
@@ -650,17 +637,16 @@ def main() -> None:
     parser.add_argument("--max_duration", type=float, default=6.0)
     parser.add_argument("--max_pause", type=float, default=1.0)
     parser.add_argument("--word_segmentation", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--api_key", help="Soniox API key (fallback to SONIOX_API_KEY)")
+    parser.add_argument("--api_key", help="Deepgram API key (fallback to DEEPGRAM_API_KEY)")
     args = parser.parse_args()
 
     if args.no_gui:
         if not args.audio_path:
             raise SystemExit("--audio_path required when using --no-gui")
-        api_key = args.api_key or os.environ.get("SONIOX_API_KEY")
+        api_key = args.api_key or os.environ.get("DEEPGRAM_API_KEY")
         if not api_key:
-            raise RuntimeError("Missing SONIOX_API_KEY")
-        session = requests.Session()
-        session.headers["Authorization"] = f"Bearer {api_key}"
+            raise RuntimeError("Missing DEEPGRAM_API_KEY")
+        deepgram_client = DeepgramClient(api_key)
         srt_settings = SrtSettings(
             max_chars_per_segment=args.max_chars,
             max_duration_s=args.max_duration,
@@ -668,7 +654,7 @@ def main() -> None:
             word_level_segmentation=args.word_segmentation,
         )
         result = transcribe_file(
-            session=session,
+            deepgram_client=deepgram_client,
             audio_path=args.audio_path,
             output_dir=args.output_dir,
             model=args.model,
@@ -688,7 +674,7 @@ def main() -> None:
             print(f"Log: {result.log_path}")
         return
 
-    gui = SonioxGui()
+    gui = DeepgramGui()
     gui.run()
 
 
