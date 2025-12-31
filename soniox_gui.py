@@ -212,7 +212,7 @@ def create_deepgram_client(api_key: str) -> "DeepgramClient":
     if not DEEPGRAM_AVAILABLE:
         raise RuntimeError("Deepgram SDK is not installed. Please install requirements.txt.")
     client_class = importlib.import_module("deepgram").DeepgramClient
-    return client_class(api_key)
+    return client_class(api_key=api_key)
 
 
 def transcribe_file(
