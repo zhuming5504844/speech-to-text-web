@@ -352,12 +352,12 @@ class SonioxGui:
         self.output_transcript_var = tk.BooleanVar(value=settings.get("output_transcript", True))
         self.output_translation_var = tk.BooleanVar(value=settings.get("output_translation", True))
         self.enable_language_id_var = tk.BooleanVar(
-            value=settings.get("enable_language_identification", True)
+            value=settings.get("enable_language_identification", False)
         )
         self.enable_speaker_diarization_var = tk.BooleanVar(
             value=settings.get("enable_speaker_diarization", False)
         )
-        self.word_segmentation_var = tk.BooleanVar(value=settings.get("word_segmentation", True))
+        self.word_segmentation_var = tk.BooleanVar(value=settings.get("word_segmentation", False))
         self.target_language_var = tk.StringVar(value=settings.get("target_language", "中文 zh"))
         self.max_chars_var = tk.StringVar(value=str(settings.get("max_chars", "16")))
         self.max_duration_var = tk.StringVar(value=str(settings.get("max_duration", "6.0")))
