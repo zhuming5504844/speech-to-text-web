@@ -53,26 +53,46 @@ def format_timestamp(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
-def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segment]:
+def build_segments_with_ranges(
+    tokens: Iterable[dict], settings: SrtSettings
+) -> tuple[list[Segment], list[tuple[int, int]]]:
     segments: list[Segment] = []
+    ranges: list[tuple[int, int]] = []
     current_tokens: list[dict] = []
     start_ms: Optional[int] = None
     last_end: Optional[int] = None
+    current_start_idx: Optional[int] = None
+    last_token_idx: Optional[int] = None
 
     max_pause_ms = int(settings.max_pause_s * 1000)
     max_duration_ms = int(settings.max_duration_s * 1000)
 
+    filtered_tokens = [
+        token
+        for token in tokens
+        if token.get("start_ms") is not None and token.get("end_ms") is not None
+    ]
+
     def flush_segment() -> None:
-        nonlocal current_tokens, start_ms, last_end
-        if not current_tokens or start_ms is None or last_end is None:
+        nonlocal current_tokens, start_ms, last_end, current_start_idx, last_token_idx
+        if (
+            not current_tokens
+            or start_ms is None
+            or last_end is None
+            or current_start_idx is None
+            or last_token_idx is None
+        ):
             return
         text = "".join(token.get("text", "") for token in current_tokens).strip()
         segments.append(Segment(start_ms=start_ms, end_ms=last_end, text=text))
+        ranges.append((current_start_idx, last_token_idx + 1))
         current_tokens = []
         start_ms = None
         last_end = None
+        current_start_idx = None
+        last_token_idx = None
 
-    for token in tokens:
+    for idx, token in enumerate(filtered_tokens):
         token_start = token.get("start_ms")
         token_end = token.get("end_ms")
         if token_start is None or token_end is None:
@@ -80,10 +100,12 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
 
         if start_ms is None:
             start_ms = token_start
+            current_start_idx = idx
 
         if last_end is not None and token_start - last_end > max_pause_ms:
             flush_segment()
             start_ms = token_start
+            current_start_idx = idx
 
         current_text = "".join(item.get("text", "") for item in current_tokens)
         incoming_text = token.get("text", "")
@@ -96,6 +118,7 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
         ):
             flush_segment()
             start_ms = token_start
+            current_start_idx = idx
 
         if (
             settings.word_level_segmentation
@@ -105,9 +128,11 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
         ):
             flush_segment()
             start_ms = token_start
+            current_start_idx = idx
 
         current_tokens.append(token)
         last_end = token_end
+        last_token_idx = idx
 
         if not settings.word_level_segmentation:
             text = token.get("text", "")
@@ -115,6 +140,11 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
                 flush_segment()
 
     flush_segment()
+    return segments, ranges
+
+
+def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segment]:
+    segments, _ = build_segments_with_ranges(tokens, settings)
     return segments
 
 
@@ -129,38 +159,65 @@ def is_punctuation_only(text: str) -> bool:
     return True
 
 
-def merge_punctuation_segments(segments: Iterable[Segment]) -> list[Segment]:
+def merge_punctuation_segments_with_ranges(
+    segments: Iterable[Segment], ranges: Iterable[tuple[int, int]]
+) -> tuple[list[Segment], list[tuple[int, int]]]:
     merged: list[Segment] = []
-    for segment in segments:
+    merged_ranges: list[tuple[int, int]] = []
+    for segment, token_range in zip(segments, ranges):
         if merged and is_punctuation_only(segment.text):
             merged[-1].text += segment.text
             merged[-1].end_ms = segment.end_ms
+            merged_ranges[-1] = (merged_ranges[-1][0], token_range[1])
             continue
         merged.append(Segment(segment.start_ms, segment.end_ms, segment.text))
-    return merged
+        merged_ranges.append(token_range)
+    return merged, merged_ranges
 
 
-def build_translation_segments(tokens: Iterable[dict], transcript_segments: Iterable[Segment]) -> list[Segment]:
-    translation_tokens = [token for token in tokens if token.get("start_ms") is not None]
-    translation_tokens.sort(key=lambda token: token.get("start_ms", 0))
+def build_translation_segments(
+    tokens: Iterable[dict],
+    transcript_segments: Iterable[Segment],
+    transcript_ranges: Iterable[tuple[int, int]],
+) -> list[Segment]:
+    translation_tokens = list(tokens)
+    tokens_with_time = [token for token in translation_tokens if token.get("start_ms") is not None]
 
     segments: list[Segment] = []
-    token_index = 0
-    token_count = len(translation_tokens)
 
-    for transcript_segment in transcript_segments:
-        segment_tokens: list[dict] = []
-        while token_index < token_count:
-            token = translation_tokens[token_index]
-            token_start = token.get("start_ms", 0)
-            if token_start < transcript_segment.start_ms:
+    if tokens_with_time:
+        tokens_with_time.sort(key=lambda token: token.get("start_ms", 0))
+        token_index = 0
+        token_count = len(tokens_with_time)
+
+        for transcript_segment in transcript_segments:
+            segment_tokens: list[dict] = []
+            while token_index < token_count:
+                token = tokens_with_time[token_index]
+                token_start = token.get("start_ms", 0)
+                if token_start < transcript_segment.start_ms:
+                    token_index += 1
+                    continue
+                if token_start > transcript_segment.end_ms:
+                    break
+                segment_tokens.append(token)
                 token_index += 1
-                continue
-            if token_start > transcript_segment.end_ms:
-                break
-            segment_tokens.append(token)
-            token_index += 1
 
+            text = "".join(token.get("text", "") for token in segment_tokens).strip()
+            segments.append(
+                Segment(
+                    start_ms=transcript_segment.start_ms,
+                    end_ms=transcript_segment.end_ms,
+                    text=text,
+                )
+            )
+        return segments
+
+    token_index = 0
+    for transcript_segment, token_range in zip(transcript_segments, transcript_ranges):
+        count = max(token_range[1] - token_range[0], 0)
+        segment_tokens = translation_tokens[token_index : token_index + count]
+        token_index += count
         text = "".join(token.get("text", "") for token in segment_tokens).strip()
         segments.append(
             Segment(
@@ -305,7 +362,10 @@ def transcribe_file(
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
     translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    transcript_segments = merge_punctuation_segments(build_segments(transcript_tokens, srt_settings))
+    transcript_segments, transcript_ranges = build_segments_with_ranges(transcript_tokens, srt_settings)
+    transcript_segments, transcript_ranges = merge_punctuation_segments_with_ranges(
+        transcript_segments, transcript_ranges
+    )
     transcript_path: Optional[str] = None
     if output_transcript:
         with open(transcript_srt_path, "w", encoding="utf-8") as handle:
@@ -315,7 +375,9 @@ def transcribe_file(
     translation_path: Optional[str] = None
     translation_segments: list[Segment] = []
     if output_translation:
-        translation_segments = build_translation_segments(translation_tokens, transcript_segments)
+        translation_segments = build_translation_segments(
+            translation_tokens, transcript_segments, transcript_ranges
+        )
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
