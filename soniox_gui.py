@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import threading
+import unicodedata
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -114,6 +115,60 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
                 flush_segment()
 
     flush_segment()
+    return segments
+
+
+def is_punctuation_only(text: str) -> bool:
+    if not text or not text.strip():
+        return True
+    for char in text:
+        if char.isspace():
+            continue
+        if not unicodedata.category(char).startswith("P"):
+            return False
+    return True
+
+
+def merge_punctuation_segments(segments: Iterable[Segment]) -> list[Segment]:
+    merged: list[Segment] = []
+    for segment in segments:
+        if merged and is_punctuation_only(segment.text):
+            merged[-1].text += segment.text
+            merged[-1].end_ms = segment.end_ms
+            continue
+        merged.append(Segment(segment.start_ms, segment.end_ms, segment.text))
+    return merged
+
+
+def build_translation_segments(tokens: Iterable[dict], transcript_segments: Iterable[Segment]) -> list[Segment]:
+    translation_tokens = [token for token in tokens if token.get("start_ms") is not None]
+    translation_tokens.sort(key=lambda token: token.get("start_ms", 0))
+
+    segments: list[Segment] = []
+    token_index = 0
+    token_count = len(translation_tokens)
+
+    for transcript_segment in transcript_segments:
+        segment_tokens: list[dict] = []
+        while token_index < token_count:
+            token = translation_tokens[token_index]
+            token_start = token.get("start_ms", 0)
+            if token_start < transcript_segment.start_ms:
+                token_index += 1
+                continue
+            if token_start > transcript_segment.end_ms:
+                break
+            segment_tokens.append(token)
+            token_index += 1
+
+        text = "".join(token.get("text", "") for token in segment_tokens).strip()
+        segments.append(
+            Segment(
+                start_ms=transcript_segment.start_ms,
+                end_ms=transcript_segment.end_ms,
+                text=text,
+            )
+        )
     return segments
 
 
@@ -250,7 +305,7 @@ def transcribe_file(
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
     translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    transcript_segments = build_segments(transcript_tokens, srt_settings)
+    transcript_segments = merge_punctuation_segments(build_segments(transcript_tokens, srt_settings))
     transcript_path: Optional[str] = None
     if output_transcript:
         with open(transcript_srt_path, "w", encoding="utf-8") as handle:
@@ -260,7 +315,7 @@ def transcribe_file(
     translation_path: Optional[str] = None
     translation_segments: list[Segment] = []
     if output_translation:
-        translation_segments = build_segments(translation_tokens, srt_settings)
+        translation_segments = build_translation_segments(translation_tokens, transcript_segments)
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
