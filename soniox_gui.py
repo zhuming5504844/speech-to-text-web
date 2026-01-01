@@ -127,6 +127,23 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def align_translation_timestamps(
+    transcript_segments: list[Segment],
+    translation_segments: list[Segment],
+) -> tuple[list[Segment], bool]:
+    if len(transcript_segments) == len(translation_segments) and translation_segments:
+        aligned = [
+            Segment(
+                start_ms=transcript.start_ms,
+                end_ms=transcript.end_ms,
+                text=translation.text,
+            )
+            for transcript, translation in zip(transcript_segments, translation_segments)
+        ]
+        return aligned, True
+    return translation_segments, False
+
+
 
 def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
     filtered: list[dict] = []
@@ -259,8 +276,12 @@ def transcribe_file(
 
     translation_path: Optional[str] = None
     translation_segments: list[Segment] = []
+    translation_aligned = False
     if output_translation:
         translation_segments = build_segments(translation_tokens, srt_settings)
+        translation_segments, translation_aligned = align_translation_timestamps(
+            transcript_segments, translation_segments
+        )
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
@@ -279,6 +300,7 @@ def transcribe_file(
         f"Max pause (s): {srt_settings.max_pause_s}",
         f"Transcript segments: {len(transcript_segments)}",
         f"Translation segments: {len(translation_segments)}",
+        f"Translation timestamps aligned: {translation_aligned}",
         f"Transcript SRT: {transcript_path or 'disabled'}",
         f"Translation SRT: {translation_path or 'disabled'}",
     ]
