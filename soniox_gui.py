@@ -52,8 +52,21 @@ def format_timestamp(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
-def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segment]:
+PUNCTUATION_CHARS = set(
+    ".,?!;:，。？！；：、…—-–()（）[]{}<>《》「」『』“”\"'·"
+)
+
+
+def is_punctuation_only(text: str) -> bool:
+    stripped = "".join(ch for ch in text if not ch.isspace())
+    if not stripped:
+        return False
+    return all(ch in PUNCTUATION_CHARS for ch in stripped)
+
+
+def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> tuple[list[Segment], list[int]]:
     segments: list[Segment] = []
+    token_counts: list[int] = []
     current_tokens: list[dict] = []
     start_ms: Optional[int] = None
     last_end: Optional[int] = None
@@ -67,6 +80,7 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
             return
         text = "".join(token.get("text", "") for token in current_tokens).strip()
         segments.append(Segment(start_ms=start_ms, end_ms=last_end, text=text))
+        token_counts.append(len(current_tokens))
         current_tokens = []
         start_ms = None
         last_end = None
@@ -114,6 +128,63 @@ def build_segments(tokens: Iterable[dict], settings: SrtSettings) -> list[Segmen
                 flush_segment()
 
     flush_segment()
+    return segments, token_counts
+
+
+def merge_punctuation_segments(
+    segments: Iterable[Segment], token_counts: Iterable[int]
+) -> tuple[list[Segment], list[int]]:
+    merged: list[Segment] = []
+    merged_counts: list[int] = []
+    for segment, count in zip(segments, token_counts):
+        if merged and is_punctuation_only(segment.text):
+            previous = merged[-1]
+            merged[-1] = Segment(
+                start_ms=previous.start_ms,
+                end_ms=segment.end_ms,
+                text=previous.text + segment.text,
+            )
+            merged_counts[-1] += count
+        else:
+            merged.append(segment)
+            merged_counts.append(count)
+    return merged, merged_counts
+
+
+def build_translation_segments(
+    translation_tokens: list[dict],
+    transcript_segments: list[Segment],
+    transcript_token_counts: list[int],
+) -> list[Segment]:
+    if not translation_tokens or not transcript_segments:
+        return []
+
+    total_translation = len(translation_tokens)
+    weights = [count if count > 0 else 1 for count in transcript_token_counts]
+    total_weight = sum(weights)
+    allocations: list[int] = []
+    assigned = 0
+    cumulative = 0.0
+
+    for idx, weight in enumerate(weights):
+        cumulative += weight
+        if idx == len(weights) - 1:
+            count = total_translation - assigned
+        else:
+            target = round(cumulative / total_weight * total_translation)
+            count = max(0, target - assigned)
+        allocations.append(count)
+        assigned += count
+
+    segments: list[Segment] = []
+    cursor = 0
+    for segment, count in zip(transcript_segments, allocations):
+        token_slice = translation_tokens[cursor : cursor + count]
+        cursor += count
+        text = "".join(token.get("text", "") for token in token_slice).strip()
+        segments.append(
+            Segment(start_ms=segment.start_ms, end_ms=segment.end_ms, text=text)
+        )
     return segments
 
 
@@ -250,7 +321,12 @@ def transcribe_file(
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
     translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    transcript_segments = build_segments(transcript_tokens, srt_settings)
+    transcript_segments, transcript_token_counts = build_segments(
+        transcript_tokens, srt_settings
+    )
+    transcript_segments, transcript_token_counts = merge_punctuation_segments(
+        transcript_segments, transcript_token_counts
+    )
     transcript_path: Optional[str] = None
     if output_transcript:
         with open(transcript_srt_path, "w", encoding="utf-8") as handle:
@@ -260,7 +336,9 @@ def transcribe_file(
     translation_path: Optional[str] = None
     translation_segments: list[Segment] = []
     if output_translation:
-        translation_segments = build_segments(translation_tokens, srt_settings)
+        translation_segments = build_translation_segments(
+            translation_tokens, transcript_segments, transcript_token_counts
+        )
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
