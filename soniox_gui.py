@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import tkinter as tk
+import unicodedata
 from dataclasses import dataclass
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable, Optional
@@ -125,6 +126,28 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
         lines.append(segment.text)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+def _is_punctuation_only(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    for char in stripped:
+        category = unicodedata.category(char)
+        if not (category.startswith("P") or category.startswith("S")):
+            return False
+    return True
+
+
+def merge_punctuation_only_segments(segments: list[Segment]) -> list[Segment]:
+    merged: list[Segment] = []
+    for segment in segments:
+        if merged and _is_punctuation_only(segment.text):
+            merged[-1].text = f"{merged[-1].text}{segment.text}"
+            merged[-1].end_ms = max(merged[-1].end_ms, segment.end_ms)
+            continue
+        merged.append(segment)
+    return merged
 
 
 
@@ -250,7 +273,9 @@ def transcribe_file(
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
     translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    transcript_segments = build_segments(transcript_tokens, srt_settings)
+    transcript_segments = merge_punctuation_only_segments(
+        build_segments(transcript_tokens, srt_settings)
+    )
     transcript_path: Optional[str] = None
     if output_transcript:
         with open(transcript_srt_path, "w", encoding="utf-8") as handle:
@@ -260,7 +285,9 @@ def transcribe_file(
     translation_path: Optional[str] = None
     translation_segments: list[Segment] = []
     if output_translation:
-        translation_segments = build_segments(translation_tokens, srt_settings)
+        translation_segments = merge_punctuation_only_segments(
+            build_segments(translation_tokens, srt_settings)
+        )
         with open(translation_srt_path, "w", encoding="utf-8") as handle:
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
