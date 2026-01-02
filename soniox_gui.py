@@ -128,13 +128,23 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
 
 
 
-def filter_tokens(tokens: Iterable[dict], translation_only: bool) -> list[dict]:
+def _get_token_language(token: dict) -> Optional[str]:
+    return token.get("language") or token.get("source_language")
+
+
+def filter_tokens(tokens: Iterable[dict], translation_only: bool, target_language: Optional[str]) -> list[dict]:
     filtered: list[dict] = []
     for token in tokens:
-        is_translation = token.get("translation_status") == "translation"
-        if translation_only and is_translation:
-            filtered.append(token)
-        elif not translation_only and not is_translation:
+        status = token.get("translation_status")
+        is_translation = status == "translation"
+        if translation_only:
+            if is_translation:
+                filtered.append(token)
+                continue
+            token_language = _get_token_language(token)
+            if token_language and target_language and token_language == target_language:
+                filtered.append(token)
+        elif not is_translation:
             filtered.append(token)
     return filtered
 
@@ -243,8 +253,8 @@ def transcribe_file(
     result = get_transcription(session, transcription_id)
 
     tokens = result.get("tokens", [])
-    transcript_tokens = filter_tokens(tokens, translation_only=False)
-    translation_tokens = filter_tokens(tokens, translation_only=True)
+    transcript_tokens = filter_tokens(tokens, translation_only=False, target_language=target_language)
+    translation_tokens = filter_tokens(tokens, translation_only=True, target_language=target_language)
 
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
     transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
@@ -306,7 +316,7 @@ class SonioxGui:
         self.root.geometry("760x680")
         self.root.minsize(760, 640)
 
-        self.file_path_var = tk.StringVar()
+        self.file_paths: list[str] = []
         self.api_key_var = tk.StringVar(
             value=settings.get("api_key") or os.environ.get("SONIOX_API_KEY", "")
         )
@@ -382,15 +392,24 @@ class SonioxGui:
         file_frame = ttk.LabelFrame(self.root, text="音频文件")
         file_frame.pack(fill=tk.X, padx=12, pady=8)
 
-        file_entry = ttk.Entry(file_frame, textvariable=self.file_path_var, width=70)
-        file_entry.grid(row=0, column=0, padx=8, pady=8, sticky=tk.W)
-        browse_button = ttk.Button(file_frame, text="选择文件", command=self._select_file)
-        browse_button.grid(row=0, column=1, padx=8, pady=8, sticky=tk.E)
+        self.file_listbox = tk.Listbox(file_frame, height=4, selectmode=tk.EXTENDED)
+        self.file_listbox.grid(row=0, column=0, rowspan=3, padx=8, pady=8, sticky=tk.NSEW)
+        file_scrollbar = ttk.Scrollbar(file_frame, orient=tk.VERTICAL, command=self.file_listbox.yview)
+        file_scrollbar.grid(row=0, column=1, rowspan=3, sticky=tk.NS, pady=8)
+        self.file_listbox.configure(yscrollcommand=file_scrollbar.set)
+
+        add_button = ttk.Button(file_frame, text="添加文件", command=self._select_files)
+        add_button.grid(row=0, column=2, padx=8, pady=4, sticky=tk.EW)
+        remove_button = ttk.Button(file_frame, text="移除选中", command=self._remove_selected_files)
+        remove_button.grid(row=1, column=2, padx=8, pady=4, sticky=tk.EW)
+        clear_button = ttk.Button(file_frame, text="清空队列", command=self._clear_files)
+        clear_button.grid(row=2, column=2, padx=8, pady=4, sticky=tk.EW)
 
         if TK_DND_AVAILABLE:
-            file_entry.drop_target_register(DND_FILES)
-            file_entry.dnd_bind("<<Drop>>", self._on_drop)
+            self.file_listbox.drop_target_register(DND_FILES)
+            self.file_listbox.dnd_bind("<<Drop>>", self._on_drop)
         file_frame.columnconfigure(0, weight=1)
+        file_frame.rowconfigure(0, weight=1)
 
         api_frame = ttk.LabelFrame(self.root, text="API 配置")
         api_frame.pack(fill=tk.X, padx=12, pady=8)
@@ -406,7 +425,7 @@ class SonioxGui:
             api_frame,
             textvariable=self.model_var,
             values=["stt-async-v3", "stt-async-v2", "stt-rt-v3"],
-            state="readonly",
+            state="normal",
             width=24,
         )
         model_combo.grid(row=1, column=1, sticky=tk.W, padx=8, pady=6)
@@ -490,29 +509,54 @@ class SonioxGui:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 8), pady=8)
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
-    def _select_file(self) -> None:
-        file_path = filedialog.askopenfilename(
-            title="选择 mp3 文件", filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")]
+    def _select_files(self) -> None:
+        file_paths = filedialog.askopenfilenames(
+            title="选择音频文件", filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")]
         )
-        if file_path:
-            self.file_path_var.set(file_path)
+        if file_paths:
+            self._add_files(list(file_paths))
 
     def _on_drop(self, event: tk.Event) -> None:
         if not event.data:
             return
-        file_path = event.data.strip("{}")
-        self.file_path_var.set(file_path)
+        try:
+            paths = list(self.root.tk.splitlist(event.data))
+        except tk.TclError:
+            paths = [event.data]
+        self._add_files(paths)
+
+    def _add_files(self, paths: list[str]) -> None:
+        added = False
+        for path in paths:
+            normalized = path.strip()
+            if not normalized:
+                continue
+            if normalized not in self.file_paths:
+                self.file_paths.append(normalized)
+                self.file_listbox.insert(tk.END, normalized)
+                added = True
+        if added:
+            self.file_listbox.see(tk.END)
+
+    def _remove_selected_files(self) -> None:
+        selected = list(self.file_listbox.curselection())
+        for index in reversed(selected):
+            self.file_listbox.delete(index)
+            del self.file_paths[index]
+
+    def _clear_files(self) -> None:
+        self.file_listbox.delete(0, tk.END)
+        self.file_paths.clear()
 
     def _start(self) -> None:
-        file_path = self.file_path_var.get().strip()
-        if not file_path:
-            messagebox.showwarning("提示", "请选择要上传的音频文件。")
+        file_paths = [path for path in self.file_paths if path.strip()]
+        if not file_paths:
+            messagebox.showwarning("提示", "请先添加要处理的音频文件。")
             return
-        if not os.path.exists(file_path):
-            messagebox.showerror("错误", "文件不存在。")
+        missing_files = [path for path in file_paths if not os.path.exists(path)]
+        if missing_files:
+            messagebox.showerror("错误", f"以下文件不存在:\n" + "\n".join(missing_files))
             return
-        output_dir = os.path.dirname(file_path) or os.getcwd()
-        os.makedirs(output_dir, exist_ok=True)
 
         api_key = self.api_key_var.get().strip() or os.environ.get("SONIOX_API_KEY")
         if not api_key:
@@ -557,8 +601,7 @@ class SonioxGui:
         thread = threading.Thread(
             target=self._run_transcription,
             args=(
-                file_path,
-                output_dir,
+                file_paths,
                 model,
                 language or None,
                 enable_language_identification,
@@ -575,8 +618,7 @@ class SonioxGui:
 
     def _run_transcription(
         self,
-        file_path: str,
-        output_dir: str,
+        file_paths: list[str],
         model: str,
         language: Optional[str],
         enable_language_identification: bool,
@@ -590,25 +632,29 @@ class SonioxGui:
         try:
             session = requests.Session()
             session.headers["Authorization"] = f"Bearer {api_key}"
-            result = transcribe_file(
-                session=session,
-                audio_path=file_path,
-                output_dir=output_dir,
-                model=model,
-                language=language,
-                enable_language_identification=enable_language_identification,
-                enable_speaker_diarization=enable_speaker_diarization,
-                target_language=target_language,
-                srt_settings=srt_settings,
-                output_transcript=output_transcript,
-                output_translation=output_translation,
-            )
-            if result.transcript_srt_path:
-                self._log(f"转录完成: {result.transcript_srt_path}")
-            if result.translation_srt_path:
-                self._log(f"翻译完成: {result.translation_srt_path}")
-            if result.log_path:
-                self._log(f"日志已保存: {result.log_path}")
+            for audio_path in file_paths:
+                output_dir = os.path.dirname(audio_path) or os.getcwd()
+                os.makedirs(output_dir, exist_ok=True)
+                self._log(f"开始处理: {audio_path}")
+                result = transcribe_file(
+                    session=session,
+                    audio_path=audio_path,
+                    output_dir=output_dir,
+                    model=model,
+                    language=language,
+                    enable_language_identification=enable_language_identification,
+                    enable_speaker_diarization=enable_speaker_diarization,
+                    target_language=target_language,
+                    srt_settings=srt_settings,
+                    output_transcript=output_transcript,
+                    output_translation=output_translation,
+                )
+                if result.transcript_srt_path:
+                    self._log(f"转录完成: {result.transcript_srt_path}")
+                if result.translation_srt_path:
+                    self._log(f"翻译完成: {result.translation_srt_path}")
+                if result.log_path:
+                    self._log(f"日志已保存: {result.log_path}")
         except Exception as exc:
             self._log(f"转录失败: {exc}")
         finally:
