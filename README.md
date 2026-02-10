@@ -379,3 +379,17 @@ Immediately terminates the transcription and closes all resources without waitin
 #### `finalize()`
 
 Trigger manual finalization. See [manual finalization](https://soniox.com/docs/stt/rt/manual-finalization).
+
+## Soniox GUI（批量音频转录）
+
+仓库内提供了 `soniox_gui.py`，可用于批量将音频转录为 SRT（可选翻译字幕）。
+
+- 支持常见音频格式：`wav`、`mp3`、`m4a`、`flac`、`aac`、`ogg`、`opus`、`webm`、`mp4`、`wma`
+- GUI 文件选择与拖拽会自动过滤不支持的格式
+- CLI 模式（`--no-gui`）也会校验格式并给出明确错误信息
+
+示例（CLI）：
+
+```bash
+python soniox_gui.py --no-gui --audio_path ./example.wav --output_dir ./output
+```
