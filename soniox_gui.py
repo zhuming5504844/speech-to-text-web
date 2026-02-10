@@ -1,4 +1,5 @@
 import argparse
+import re
 import os
 import threading
 import time
@@ -13,6 +14,8 @@ import requests
 from requests import Session
 
 SONIOX_API_BASE_URL = "https://api.soniox.com"
+SONIOX_MODELS_DOC_URL = "https://soniox.com/docs/stt/models"
+DEFAULT_MODEL_OPTIONS = ["stt-async-v3", "stt-async-v2", "stt-rt-v3"]
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
 if TK_DND_AVAILABLE:
@@ -201,6 +204,22 @@ def get_config(
     return config
 
 
+def fetch_models_from_docs(session: Session, timeout_s: int = 10) -> list[str]:
+    response = session.get(SONIOX_MODELS_DOC_URL, timeout=timeout_s)
+    response.raise_for_status()
+
+    matches = re.findall(r"\bstt-[a-z0-9-]+\b", response.text)
+    seen: set[str] = set()
+    models: list[str] = []
+    for item in matches:
+        if item in seen:
+            continue
+        seen.add(item)
+        models.append(item)
+
+    return models
+
+
 def upload_audio(session: Session, audio_path: str) -> str:
     with open(audio_path, "rb") as audio_file:
         res = session.post(
@@ -365,6 +384,8 @@ class SonioxGui:
             ("西班牙语 es", "es"),
         ]
         self.language_map = {label: code for label, code in self.language_options}
+        self.model_options = list(DEFAULT_MODEL_OPTIONS)
+        self.model_combo: Optional[ttk.Combobox] = None
 
         self._build_ui()
 
@@ -405,11 +426,19 @@ class SonioxGui:
         model_combo = ttk.Combobox(
             api_frame,
             textvariable=self.model_var,
-            values=["stt-async-v3", "stt-async-v2", "stt-rt-v3"],
+            values=self.model_options,
             state="readonly",
             width=24,
         )
         model_combo.grid(row=1, column=1, sticky=tk.W, padx=8, pady=6)
+        self.model_combo = model_combo
+
+        refresh_models_button = ttk.Button(
+            api_frame,
+            text="刷新模型",
+            command=self._refresh_models,
+        )
+        refresh_models_button.grid(row=1, column=2, sticky=tk.W, padx=8, pady=6)
 
         language_label = ttk.Label(api_frame, text="识别语言 (language)")
         language_label.grid(row=2, column=0, sticky=tk.W, padx=8, pady=6)
@@ -571,6 +600,43 @@ class SonioxGui:
             daemon=True,
         )
         thread.start()
+
+    def _refresh_models(self) -> None:
+        self._log(f"正在从文档拉取最新模型列表：{SONIOX_MODELS_DOC_URL}")
+
+        def worker() -> None:
+            try:
+                session = requests.Session()
+                models = fetch_models_from_docs(session)
+            except Exception as exc:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showerror("模型刷新失败", f"无法获取模型列表：{exc}"),
+                )
+                self._log(f"刷新模型失败: {exc}")
+                return
+
+            if not models:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning("模型刷新", "未在文档页面解析到模型名称。"),
+                )
+                self._log("刷新模型完成，但未解析到可用模型。")
+                return
+
+            def update_models() -> None:
+                self.model_options = models
+                if self.model_combo is not None:
+                    self.model_combo.configure(values=models)
+                current_model = self.model_var.get().strip()
+                if current_model not in models:
+                    self.model_var.set(models[0])
+                messagebox.showinfo("模型刷新", f"已更新模型列表，共 {len(models)} 个模型。")
+
+            self.root.after(0, update_models)
+            self._log(f"模型刷新成功: {', '.join(models)}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _run_transcription(
         self,
