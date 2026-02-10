@@ -424,7 +424,7 @@ class SonioxGui:
         model_combo = ttk.Combobox(
             api_frame,
             textvariable=self.model_var,
-            values=["stt-async-v3", "stt-async-v2", "stt-rt-v3"],
+            values=["stt-async-v4", "stt-async-v3", "stt-async-v2", "stt-rt-v3"],
             state="normal",
             width=24,
         )
