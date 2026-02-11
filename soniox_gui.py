@@ -32,6 +32,8 @@ SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp4",
     ".wma",
 }
+TRANSCRIPTION_POLL_INTERVAL_S = 1.0
+TRANSCRIPTION_TIMEOUT_S = 60 * 30
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
 if TK_DND_AVAILABLE:
@@ -221,16 +223,30 @@ def create_transcription(session: Session, config: dict) -> str:
     return res.json()["id"]
 
 
-def wait_until_completed(session: Session, transcription_id: str) -> None:
+def wait_until_completed(
+    session: Session,
+    transcription_id: str,
+    poll_interval_s: float = TRANSCRIPTION_POLL_INTERVAL_S,
+    timeout_s: float = TRANSCRIPTION_TIMEOUT_S,
+) -> dict:
+    started_at = time.monotonic()
     while True:
         res = session.get(f"{SONIOX_API_BASE_URL}/v1/transcriptions/{transcription_id}")
         res.raise_for_status()
         data = res.json()
         if data["status"] == "completed":
-            return
+            return data
         if data["status"] == "error":
             raise RuntimeError(data.get("error_message", "Unknown error"))
-        time.sleep(1)
+        if data["status"] in {"canceled", "cancelled", "deleted"}:
+            raise RuntimeError(f"Transcription ended with status: {data['status']}")
+
+        if time.monotonic() - started_at > timeout_s:
+            raise TimeoutError(
+                f"Timed out waiting for transcription {transcription_id} after {timeout_s} seconds"
+            )
+
+        time.sleep(poll_interval_s)
 
 
 def get_transcription(session: Session, transcription_id: str) -> dict:
@@ -263,73 +279,92 @@ def transcribe_file(
     srt_settings: SrtSettings,
     output_transcript: bool,
     output_translation: bool,
+    poll_interval_s: float = TRANSCRIPTION_POLL_INTERVAL_S,
+    timeout_s: float = TRANSCRIPTION_TIMEOUT_S,
 ) -> TranscriptionResult:
-    file_id = upload_audio(session, audio_path)
-    config = get_config(
-        None,
-        file_id,
-        model,
-        language,
-        enable_language_identification,
-        enable_speaker_diarization,
-        target_language if output_translation else None,
-    )
+    file_id: Optional[str] = None
+    transcription_id: Optional[str] = None
 
-    transcription_id = create_transcription(session, config)
-    wait_until_completed(session, transcription_id)
-    result = get_transcription(session, transcription_id)
+    try:
+        file_id = upload_audio(session, audio_path)
+        config = get_config(
+            None,
+            file_id,
+            model,
+            language,
+            enable_language_identification,
+            enable_speaker_diarization,
+            target_language if output_translation else None,
+        )
 
-    tokens = result.get("tokens", [])
-    transcript_tokens = filter_tokens(tokens, translation_only=False, target_language=target_language)
-    translation_tokens = filter_tokens(tokens, translation_only=True, target_language=target_language)
+        transcription_id = create_transcription(session, config)
+        wait_until_completed(
+            session,
+            transcription_id,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+        )
+        result = get_transcription(session, transcription_id)
 
-    base_name = os.path.splitext(os.path.basename(audio_path))[0]
-    transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
-    translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
+        tokens = result.get("tokens", [])
+        transcript_tokens = filter_tokens(tokens, translation_only=False, target_language=target_language)
+        translation_tokens = filter_tokens(tokens, translation_only=True, target_language=target_language)
 
-    transcript_segments = build_segments(transcript_tokens, srt_settings)
-    transcript_path: Optional[str] = None
-    if output_transcript:
-        with open(transcript_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(segments_to_srt(transcript_segments))
-        transcript_path = transcript_srt_path
+        base_name = os.path.splitext(os.path.basename(audio_path))[0]
+        transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
+        translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    translation_path: Optional[str] = None
-    translation_segments: list[Segment] = []
-    if output_translation:
-        translation_segments = build_segments(translation_tokens, srt_settings)
-        with open(translation_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(segments_to_srt(translation_segments))
-        translation_path = translation_srt_path
+        transcript_segments = build_segments(transcript_tokens, srt_settings)
+        transcript_path: Optional[str] = None
+        if output_transcript:
+            with open(transcript_srt_path, "w", encoding="utf-8") as handle:
+                handle.write(segments_to_srt(transcript_segments))
+            transcript_path = transcript_srt_path
 
-    log_path = os.path.join(output_dir, f"{base_name}.log.txt")
-    log_lines = [
-        f"Audio: {audio_path}",
-        f"Model: {model}",
-        f"Language: {language or 'auto'}",
-        f"Target language: {target_language or 'none'}",
-        f"Enable language identification: {enable_language_identification}",
-        f"Enable speaker diarization: {enable_speaker_diarization}",
-        f"Word-level segmentation: {srt_settings.word_level_segmentation}",
-        f"Max chars per segment: {srt_settings.max_chars_per_segment}",
-        f"Max duration (s): {srt_settings.max_duration_s}",
-        f"Max pause (s): {srt_settings.max_pause_s}",
-        f"Transcript segments: {len(transcript_segments)}",
-        f"Translation segments: {len(translation_segments)}",
-        f"Transcript SRT: {transcript_path or 'disabled'}",
-        f"Translation SRT: {translation_path or 'disabled'}",
-    ]
-    with open(log_path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(log_lines) + "\n")
+        translation_path: Optional[str] = None
+        translation_segments: list[Segment] = []
+        if output_translation:
+            translation_segments = build_segments(translation_tokens, srt_settings)
+            with open(translation_srt_path, "w", encoding="utf-8") as handle:
+                handle.write(segments_to_srt(translation_segments))
+            translation_path = translation_srt_path
 
-    delete_transcription(session, transcription_id)
-    delete_file(session, file_id)
+        log_path = os.path.join(output_dir, f"{base_name}.log.txt")
+        log_lines = [
+            f"Audio: {audio_path}",
+            f"Model: {model}",
+            f"Language: {language or 'auto'}",
+            f"Target language: {target_language or 'none'}",
+            f"Enable language identification: {enable_language_identification}",
+            f"Enable speaker diarization: {enable_speaker_diarization}",
+            f"Word-level segmentation: {srt_settings.word_level_segmentation}",
+            f"Max chars per segment: {srt_settings.max_chars_per_segment}",
+            f"Max duration (s): {srt_settings.max_duration_s}",
+            f"Max pause (s): {srt_settings.max_pause_s}",
+            f"Transcript segments: {len(transcript_segments)}",
+            f"Translation segments: {len(translation_segments)}",
+            f"Transcript SRT: {transcript_path or 'disabled'}",
+            f"Translation SRT: {translation_path or 'disabled'}",
+        ]
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(log_lines) + "\n")
 
-    return TranscriptionResult(
-        transcript_srt_path=transcript_path,
-        translation_srt_path=translation_path,
-        log_path=log_path,
-    )
+        return TranscriptionResult(
+            transcript_srt_path=transcript_path,
+            translation_srt_path=translation_path,
+            log_path=log_path,
+        )
+    finally:
+        if transcription_id:
+            try:
+                delete_transcription(session, transcription_id)
+            except requests.RequestException:
+                pass
+        if file_id:
+            try:
+                delete_file(session, file_id)
+            except requests.RequestException:
+                pass
 
 
 class SonioxGui:
@@ -744,6 +779,8 @@ def main() -> None:
     parser.add_argument("--max_pause", type=float, default=1.0)
     parser.add_argument("--word_segmentation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--api_key", help="Soniox API key (fallback to SONIOX_API_KEY)")
+    parser.add_argument("--poll_interval", type=float, default=TRANSCRIPTION_POLL_INTERVAL_S)
+    parser.add_argument("--timeout", type=float, default=TRANSCRIPTION_TIMEOUT_S)
     args = parser.parse_args()
 
     if args.no_gui:
@@ -777,6 +814,8 @@ def main() -> None:
             srt_settings=srt_settings,
             output_transcript=args.output_transcript,
             output_translation=args.output_translation,
+            poll_interval_s=args.poll_interval,
+            timeout_s=args.timeout,
         )
         if result.transcript_srt_path:
             print(f"Transcript: {result.transcript_srt_path}")
