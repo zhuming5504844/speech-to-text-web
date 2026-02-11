@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -13,7 +14,24 @@ import requests
 from requests import Session
 
 SONIOX_API_BASE_URL = "https://api.soniox.com"
+if getattr(sys, "frozen", False):
+    base_dir = os.path.dirname(sys.executable)
+else:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".soniox_gui_settings.json")
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".webm",
+    ".mp4",
+    ".wma",
+}
 
 TK_DND_AVAILABLE = importlib.util.find_spec("tkinterdnd2") is not None
 if TK_DND_AVAILABLE:
@@ -125,6 +143,15 @@ def segments_to_srt(segments: Iterable[Segment]) -> str:
         lines.append(segment.text)
         lines.append("")
     return "\n".join(lines).strip() + "\n"
+
+
+def is_supported_audio_file(path: str) -> bool:
+    _, ext = os.path.splitext(path)
+    return ext.lower() in SUPPORTED_AUDIO_EXTENSIONS
+
+
+def format_supported_audio_types() -> str:
+    return ", ".join(sorted(ext.lstrip(".") for ext in SUPPORTED_AUDIO_EXTENSIONS))
 
 
 
@@ -510,8 +537,9 @@ class SonioxGui:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
     def _select_files(self) -> None:
+        extensions = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_AUDIO_EXTENSIONS))
         file_paths = filedialog.askopenfilenames(
-            title="选择音频文件", filetypes=[("Audio Files", "*.mp3 *.wav *.m4a")]
+            title="选择音频文件", filetypes=[("Audio Files", extensions)]
         )
         if file_paths:
             self._add_files(list(file_paths))
@@ -527,9 +555,13 @@ class SonioxGui:
 
     def _add_files(self, paths: list[str]) -> None:
         added = False
+        unsupported: list[str] = []
         for path in paths:
             normalized = path.strip()
             if not normalized:
+                continue
+            if not is_supported_audio_file(normalized):
+                unsupported.append(normalized)
                 continue
             if normalized not in self.file_paths:
                 self.file_paths.append(normalized)
@@ -537,6 +569,12 @@ class SonioxGui:
                 added = True
         if added:
             self.file_listbox.see(tk.END)
+        if unsupported:
+            self._log(
+                "以下文件格式暂不支持，已跳过:\n"
+                + "\n".join(unsupported)
+                + f"\n支持格式: {format_supported_audio_types()}"
+            )
 
     def _remove_selected_files(self) -> None:
         selected = list(self.file_listbox.curselection())
@@ -556,6 +594,15 @@ class SonioxGui:
         missing_files = [path for path in file_paths if not os.path.exists(path)]
         if missing_files:
             messagebox.showerror("错误", f"以下文件不存在:\n" + "\n".join(missing_files))
+            return
+        unsupported_files = [path for path in file_paths if not is_supported_audio_file(path)]
+        if unsupported_files:
+            messagebox.showerror(
+                "错误",
+                "以下文件格式不支持:\n"
+                + "\n".join(unsupported_files)
+                + f"\n\n支持格式: {format_supported_audio_types()}",
+            )
             return
 
         api_key = self.api_key_var.get().strip() or os.environ.get("SONIOX_API_KEY")
@@ -682,7 +729,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Soniox GUI for SRT generation")
     parser.add_argument("--no-gui", action="store_true", help="Run without GUI")
     parser.add_argument("--audio_path", help="Audio file path for CLI mode")
-    parser.add_argument("--output_dir", default=os.getcwd())
+    parser.add_argument("--output_dir", default=base_dir)
     parser.add_argument("--model", default="stt-async-v3")
     parser.add_argument("--language", default="ja")
     parser.add_argument(
@@ -702,6 +749,11 @@ def main() -> None:
     if args.no_gui:
         if not args.audio_path:
             raise SystemExit("--audio_path required when using --no-gui")
+        if not is_supported_audio_file(args.audio_path):
+            raise SystemExit(
+                "Unsupported audio format. Supported formats: "
+                + format_supported_audio_types()
+            )
         api_key = args.api_key or os.environ.get("SONIOX_API_KEY")
         if not api_key:
             raise RuntimeError("Missing SONIOX_API_KEY")
