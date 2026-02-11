@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -13,6 +14,11 @@ import requests
 from requests import Session
 
 SONIOX_API_BASE_URL = "https://api.soniox.com"
+if getattr(sys, "frozen", False):
+    base_dir = os.path.dirname(sys.executable)
+else:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".soniox_gui_settings.json")
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".wav",
@@ -723,7 +729,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Soniox GUI for SRT generation")
     parser.add_argument("--no-gui", action="store_true", help="Run without GUI")
     parser.add_argument("--audio_path", help="Audio file path for CLI mode")
-    parser.add_argument("--output_dir", default=os.getcwd())
+    parser.add_argument("--output_dir", default=base_dir)
     parser.add_argument("--model", default="stt-async-v3")
     parser.add_argument("--language", default="ja")
     parser.add_argument(
