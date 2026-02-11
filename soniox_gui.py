@@ -49,6 +49,8 @@ class TranscriptionResult:
 
 
 BATCH_PARALLEL_WORKERS = 3
+TRANSCRIPTION_POLL_INTERVAL_S = 1.0
+TRANSCRIPTION_TIMEOUT_S = 1800.0
 
 
 @dataclass
@@ -224,16 +226,31 @@ def create_transcription(session: Session, config: dict) -> str:
     return res.json()["id"]
 
 
-def wait_until_completed(session: Session, transcription_id: str) -> None:
+def wait_until_completed(
+    session: Session,
+    transcription_id: str,
+    poll_interval_s: float = TRANSCRIPTION_POLL_INTERVAL_S,
+    timeout_s: float = TRANSCRIPTION_TIMEOUT_S,
+) -> None:
+    start_time = time.monotonic()
     while True:
         res = session.get(f"{SONIOX_API_BASE_URL}/v1/transcriptions/{transcription_id}")
         res.raise_for_status()
         data = res.json()
-        if data["status"] == "completed":
+        status = data.get("status")
+        if status == "completed":
             return
-        if data["status"] == "error":
+        if status in {"error", "canceled", "cancelled", "deleted"}:
             raise RuntimeError(data.get("error_message", "Unknown error"))
-        time.sleep(1)
+
+        elapsed_s = time.monotonic() - start_time
+        if elapsed_s >= timeout_s:
+            raise TimeoutError(
+                f"Timed out waiting for transcription {transcription_id} after {timeout_s:.1f}s "
+                f"(last status: {status})"
+            )
+
+        time.sleep(poll_interval_s)
 
 
 def get_transcription(session: Session, transcription_id: str) -> dict:
@@ -267,51 +284,66 @@ def transcribe_file(
     output_transcript: bool,
     output_translation: bool,
 ) -> TranscriptionResult:
-    file_id = upload_audio(session, audio_path)
-    config = get_config(
-        None,
-        file_id,
-        model,
-        language,
-        enable_language_identification,
-        enable_speaker_diarization,
-        target_language if output_translation else None,
-    )
+    file_id: Optional[str] = None
+    transcription_id: Optional[str] = None
+    try:
+        file_id = upload_audio(session, audio_path)
+        config = get_config(
+            None,
+            file_id,
+            model,
+            language,
+            enable_language_identification,
+            enable_speaker_diarization,
+            target_language if output_translation else None,
+        )
 
-    transcription_id = create_transcription(session, config)
-    wait_until_completed(session, transcription_id)
-    result = get_transcription(session, transcription_id)
+        transcription_id = create_transcription(session, config)
+        wait_until_completed(session, transcription_id)
+        result = get_transcription(session, transcription_id)
 
-    tokens = result.get("tokens", [])
-    transcript_tokens = filter_tokens(tokens, translation_only=False, target_language=target_language)
-    translation_tokens = filter_tokens(tokens, translation_only=True, target_language=target_language)
+        tokens = result.get("tokens", [])
+        transcript_tokens = filter_tokens(
+            tokens, translation_only=False, target_language=target_language
+        )
+        translation_tokens = filter_tokens(
+            tokens, translation_only=True, target_language=target_language
+        )
 
-    base_name = os.path.splitext(os.path.basename(audio_path))[0]
-    transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
-    translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
+        base_name = os.path.splitext(os.path.basename(audio_path))[0]
+        transcript_srt_path = os.path.join(output_dir, f"{base_name}.srt")
+        translation_srt_path = os.path.join(output_dir, f"{base_name}.translation.srt")
 
-    transcript_segments = build_segments(transcript_tokens, srt_settings)
-    transcript_path: Optional[str] = None
-    if output_transcript:
-        with open(transcript_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(segments_to_srt(transcript_segments))
-        transcript_path = transcript_srt_path
+        transcript_segments = build_segments(transcript_tokens, srt_settings)
+        transcript_path: Optional[str] = None
+        if output_transcript:
+            with open(transcript_srt_path, "w", encoding="utf-8") as handle:
+                handle.write(segments_to_srt(transcript_segments))
+            transcript_path = transcript_srt_path
 
-    translation_path: Optional[str] = None
-    translation_segments: list[Segment] = []
-    if output_translation:
-        translation_segments = build_segments(translation_tokens, srt_settings)
-        with open(translation_srt_path, "w", encoding="utf-8") as handle:
-            handle.write(segments_to_srt(translation_segments))
-        translation_path = translation_srt_path
+        translation_path: Optional[str] = None
+        translation_segments: list[Segment] = []
+        if output_translation:
+            translation_segments = build_segments(translation_tokens, srt_settings)
+            with open(translation_srt_path, "w", encoding="utf-8") as handle:
+                handle.write(segments_to_srt(translation_segments))
+            translation_path = translation_srt_path
 
-    delete_transcription(session, transcription_id)
-    delete_file(session, file_id)
-
-    return TranscriptionResult(
-        transcript_srt_path=transcript_path,
-        translation_srt_path=translation_path,
-    )
+        return TranscriptionResult(
+            transcript_srt_path=transcript_path,
+            translation_srt_path=translation_path,
+        )
+    finally:
+        if transcription_id:
+            try:
+                delete_transcription(session, transcription_id)
+            except requests.RequestException:
+                pass
+        if file_id:
+            try:
+                delete_file(session, file_id)
+            except requests.RequestException:
+                pass
 
 
 class SonioxGui:
