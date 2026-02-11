@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import json
 import os
 import sys
@@ -45,7 +46,9 @@ else:
 class TranscriptionResult:
     transcript_srt_path: Optional[str]
     translation_srt_path: Optional[str]
-    log_path: Optional[str]
+
+
+BATCH_PARALLEL_WORKERS = 3
 
 
 @dataclass
@@ -302,33 +305,12 @@ def transcribe_file(
             handle.write(segments_to_srt(translation_segments))
         translation_path = translation_srt_path
 
-    log_path = os.path.join(output_dir, f"{base_name}.log.txt")
-    log_lines = [
-        f"Audio: {audio_path}",
-        f"Model: {model}",
-        f"Language: {language or 'auto'}",
-        f"Target language: {target_language or 'none'}",
-        f"Enable language identification: {enable_language_identification}",
-        f"Enable speaker diarization: {enable_speaker_diarization}",
-        f"Word-level segmentation: {srt_settings.word_level_segmentation}",
-        f"Max chars per segment: {srt_settings.max_chars_per_segment}",
-        f"Max duration (s): {srt_settings.max_duration_s}",
-        f"Max pause (s): {srt_settings.max_pause_s}",
-        f"Transcript segments: {len(transcript_segments)}",
-        f"Translation segments: {len(translation_segments)}",
-        f"Transcript SRT: {transcript_path or 'disabled'}",
-        f"Translation SRT: {translation_path or 'disabled'}",
-    ]
-    with open(log_path, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(log_lines) + "\n")
-
     delete_transcription(session, transcription_id)
     delete_file(session, file_id)
 
     return TranscriptionResult(
         transcript_srt_path=transcript_path,
         translation_srt_path=translation_path,
-        log_path=log_path,
     )
 
 
@@ -676,32 +658,44 @@ class SonioxGui:
         output_translation: bool,
         api_key: str,
     ) -> None:
-        try:
+        def process_audio(audio_path: str) -> TranscriptionResult:
             session = requests.Session()
             session.headers["Authorization"] = f"Bearer {api_key}"
-            for audio_path in file_paths:
-                output_dir = os.path.dirname(audio_path) or os.getcwd()
-                os.makedirs(output_dir, exist_ok=True)
-                self._log(f"开始处理: {audio_path}")
-                result = transcribe_file(
-                    session=session,
-                    audio_path=audio_path,
-                    output_dir=output_dir,
-                    model=model,
-                    language=language,
-                    enable_language_identification=enable_language_identification,
-                    enable_speaker_diarization=enable_speaker_diarization,
-                    target_language=target_language,
-                    srt_settings=srt_settings,
-                    output_transcript=output_transcript,
-                    output_translation=output_translation,
-                )
-                if result.transcript_srt_path:
-                    self._log(f"转录完成: {result.transcript_srt_path}")
-                if result.translation_srt_path:
-                    self._log(f"翻译完成: {result.translation_srt_path}")
-                if result.log_path:
-                    self._log(f"日志已保存: {result.log_path}")
+            output_dir = os.path.dirname(audio_path) or os.getcwd()
+            os.makedirs(output_dir, exist_ok=True)
+            return transcribe_file(
+                session=session,
+                audio_path=audio_path,
+                output_dir=output_dir,
+                model=model,
+                language=language,
+                enable_language_identification=enable_language_identification,
+                enable_speaker_diarization=enable_speaker_diarization,
+                target_language=target_language,
+                srt_settings=srt_settings,
+                output_transcript=output_transcript,
+                output_translation=output_translation,
+            )
+
+        try:
+            self._log(f"批量模式已开启并行线路: {BATCH_PARALLEL_WORKERS}")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=BATCH_PARALLEL_WORKERS) as executor:
+                future_map = {}
+                for audio_path in file_paths:
+                    self._log(f"开始处理: {audio_path}")
+                    future = executor.submit(process_audio, audio_path)
+                    future_map[future] = audio_path
+
+                for future in concurrent.futures.as_completed(future_map):
+                    audio_path = future_map[future]
+                    try:
+                        result = future.result()
+                        if result.transcript_srt_path:
+                            self._log(f"转录完成: {result.transcript_srt_path}")
+                        if result.translation_srt_path:
+                            self._log(f"翻译完成: {result.translation_srt_path}")
+                    except Exception as exc:
+                        self._log(f"处理失败: {audio_path} -> {exc}")
         except Exception as exc:
             self._log(f"转录失败: {exc}")
         finally:
@@ -782,8 +776,6 @@ def main() -> None:
             print(f"Transcript: {result.transcript_srt_path}")
         if result.translation_srt_path:
             print(f"Translation: {result.translation_srt_path}")
-        if result.log_path:
-            print(f"Log: {result.log_path}")
         return
 
     gui = SonioxGui()
