@@ -279,6 +279,8 @@ def transcribe_file(
     srt_settings: SrtSettings,
     output_transcript: bool,
     output_translation: bool,
+    poll_interval_s: float = TRANSCRIPTION_POLL_INTERVAL_S,
+    timeout_s: float = TRANSCRIPTION_TIMEOUT_S,
 ) -> TranscriptionResult:
     file_id: Optional[str] = None
     transcription_id: Optional[str] = None
@@ -296,7 +298,12 @@ def transcribe_file(
         )
 
         transcription_id = create_transcription(session, config)
-        wait_until_completed(session, transcription_id)
+        wait_until_completed(
+            session,
+            transcription_id,
+            poll_interval_s=poll_interval_s,
+            timeout_s=timeout_s,
+        )
         result = get_transcription(session, transcription_id)
 
         tokens = result.get("tokens", [])
@@ -772,6 +779,8 @@ def main() -> None:
     parser.add_argument("--max_pause", type=float, default=1.0)
     parser.add_argument("--word_segmentation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--api_key", help="Soniox API key (fallback to SONIOX_API_KEY)")
+    parser.add_argument("--poll_interval", type=float, default=TRANSCRIPTION_POLL_INTERVAL_S)
+    parser.add_argument("--timeout", type=float, default=TRANSCRIPTION_TIMEOUT_S)
     args = parser.parse_args()
 
     if args.no_gui:
@@ -805,6 +814,8 @@ def main() -> None:
             srt_settings=srt_settings,
             output_transcript=args.output_transcript,
             output_translation=args.output_translation,
+            poll_interval_s=args.poll_interval,
+            timeout_s=args.timeout,
         )
         if result.transcript_srt_path:
             print(f"Transcript: {result.transcript_srt_path}")
